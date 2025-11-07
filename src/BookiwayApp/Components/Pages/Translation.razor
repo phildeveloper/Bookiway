@@ -1,5 +1,7 @@
 @page "/translation"
 
+@using System.IO
+@using System.Linq
 @using BookiwayApp.Services
 
 @inject PdfDecomposerService PdfDecomposer
@@ -22,19 +24,22 @@
 
         <label class="file-picker" for="pdfUpload">
             <span class="file-picker-icon" aria-hidden="true">📄</span>
-            <span class="file-picker-text">Browse PDF files</span>
+            <span class="file-picker-text">@(_fileName is null ? "Browse PDF files" : _fileName)</span>
             <InputFile id="pdfUpload" OnChange="HandleFileSelected" accept="application/pdf" />
         </label>
         <p class="upload-hint">Supported format: PDF (10 MB max).</p>
 
         @if (!string.IsNullOrEmpty(_fileName))
         {
-            <p class="selected-file">Selected file: @_fileName</p>
+            <p class="selected-file" aria-live="polite">Selected file: @_fileName</p>
         }
 
         <div class="directory-input">
             <label class="directory-label" for="outputDirectory">Save pages to</label>
-            <InputText id="outputDirectory" class="directory-textbox" placeholder="C:\\Documents\\PdfPages" @bind-Value="_outputDirectory" />
+            <div class="directory-input-row">
+                <InputText id="outputDirectory" class="directory-textbox" placeholder="C:\\Documents\\PdfPages" @bind-Value="_outputDirectory" @bind-Value:event="oninput" />
+                <button type="button" class="browse-directory-button" @onclick="OpenDirectoryPicker" disabled="@_isProcessing">Browse…</button>
+            </div>
             <p class="directory-hint">Specify the destination folder on your computer.</p>
         </div>
 
@@ -62,6 +67,54 @@
             <div class="@statusClass">@_statusMessage</div>
         }
     </div>
+
+    @if (_isDirectoryPickerOpen)
+    {
+        <div class="directory-modal" role="dialog" aria-modal="true">
+            <div class="directory-modal-content">
+                <div class="directory-modal-header">
+                    <h3>Select destination folder</h3>
+                    <p class="directory-modal-path" title="@_directoryBrowserPath">@_directoryBrowserPath</p>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_directoryBrowserError))
+                {
+                    <div class="directory-error" role="alert">@_directoryBrowserError</div>
+                }
+
+                <div class="directory-browser">
+                    <div class="directory-browser-actions">
+                        <button type="button" class="directory-nav-button" @onclick="NavigateUp" disabled="@(!CanNavigateUp)">⬆ Parent folder</button>
+                        <button type="button" class="directory-nav-button" @onclick="RefreshCurrentDirectory">↻ Refresh</button>
+                    </div>
+
+                    <ul class="directory-list" role="listbox">
+                        @if (_directoryEntries.Count == 0)
+                        {
+                            <li class="directory-empty">No subdirectories</li>
+                        }
+                        else
+                        {
+                            @foreach (var entry in _directoryEntries)
+                            {
+                                <li>
+                                    <button type="button" class="directory-item" @onclick="() => NavigateToDirectory(entry.FullPath)">
+                                        <span aria-hidden="true">📁</span>
+                                        <span>@entry.Name</span>
+                                    </button>
+                                </li>
+                            }
+                        }
+                    </ul>
+                </div>
+
+                <div class="directory-modal-footer">
+                    <button type="button" class="confirm-button" @onclick="ConfirmDirectorySelection">Use this folder</button>
+                    <button type="button" class="cancel-button" @onclick="CloseDirectoryPicker">Cancel</button>
+                </div>
+            </div>
+        </div>
+    }
 </div>
 
 @code {
@@ -74,14 +127,70 @@
     private int _progressPercent;
     private string? _statusMessage;
     private bool _isSuccess;
+    private bool _isDirectoryPickerOpen;
+    private string _directoryBrowserPath = string.Empty;
+    private List<DirectoryEntry> _directoryEntries = new();
+    private string? _directoryBrowserError;
 
-    private bool IsDecomposeDisabled => _selectedFile is null || string.IsNullOrWhiteSpace(_outputDirectory) || _isProcessing;
+    private bool IsDecomposeDisabled => _selectedFile is null || string.IsNullOrWhiteSpace(TrimmedOutputDirectory) || _isProcessing;
+    private bool CanNavigateUp => TryGetParentDirectory(_directoryBrowserPath) is not null;
+    private string TrimmedOutputDirectory => _outputDirectory?.Trim() ?? string.Empty;
 
     private void HandleFileSelected(InputFileChangeEventArgs e)
     {
         _selectedFile = e.File;
         _fileName = e.File?.Name;
         _statusMessage = null;
+    }
+
+    private void OpenDirectoryPicker()
+    {
+        var initialPath = string.IsNullOrWhiteSpace(TrimmedOutputDirectory)
+            ? GetDefaultDirectory()
+            : TrimmedOutputDirectory;
+
+        _directoryBrowserError = null;
+
+        if (!TryLoadDirectory(initialPath))
+        {
+            TryLoadDirectory(GetDefaultDirectory());
+        }
+
+        _isDirectoryPickerOpen = true;
+    }
+
+    private void CloseDirectoryPicker()
+    {
+        _isDirectoryPickerOpen = false;
+    }
+
+    private void ConfirmDirectorySelection()
+    {
+        if (!string.IsNullOrWhiteSpace(_directoryBrowserPath))
+        {
+            _outputDirectory = _directoryBrowserPath;
+        }
+
+        _isDirectoryPickerOpen = false;
+    }
+
+    private void NavigateToDirectory(string path)
+    {
+        TryLoadDirectory(path);
+    }
+
+    private void NavigateUp()
+    {
+        var parent = TryGetParentDirectory(_directoryBrowserPath);
+        if (parent is not null)
+        {
+            TryLoadDirectory(parent.FullName);
+        }
+    }
+
+    private void RefreshCurrentDirectory()
+    {
+        TryLoadDirectory(_directoryBrowserPath);
     }
 
     private async Task StartDecompositionAsync()
@@ -93,7 +202,7 @@
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_outputDirectory))
+        if (string.IsNullOrWhiteSpace(TrimmedOutputDirectory))
         {
             _statusMessage = "Please specify the destination directory.";
             _isSuccess = false;
@@ -114,12 +223,13 @@
         try
         {
             await using var stream = _selectedFile.OpenReadStream(MaxFileSize);
-            var result = await PdfDecomposer.DecomposeAsync(stream, _outputDirectory, progress);
+            var outputDirectory = TrimmedOutputDirectory;
+            var result = await PdfDecomposer.DecomposeAsync(stream, outputDirectory, progress);
 
             _isSuccess = true;
             _statusMessage = result.PageCount == 0
                 ? "No pages were found in the PDF document."
-                : $"Successfully decomposed {result.PageCount} page(s) to '{_outputDirectory}'.";
+                : $"Successfully decomposed {result.PageCount} page(s) to '{outputDirectory}'.";
             _progressPercent = 100;
         }
         catch (Exception ex)
@@ -133,4 +243,83 @@
             await InvokeAsync(StateHasChanged);
         }
     }
+
+    private bool TryLoadDirectory(string directory)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(directory);
+            if (!Directory.Exists(fullPath))
+            {
+                _directoryBrowserError = $"Directory '{directory}' was not found.";
+                _directoryEntries = new List<DirectoryEntry>();
+                return false;
+            }
+
+            _directoryBrowserPath = fullPath;
+            _directoryEntries = Directory.GetDirectories(fullPath)
+                .OrderBy(dir => dir, StringComparer.OrdinalIgnoreCase)
+                .Select(dir => new DirectoryEntry(GetDirectoryDisplayName(dir), dir))
+                .ToList();
+            _directoryBrowserError = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _directoryBrowserError = $"Unable to open directory: {ex.Message}";
+            _directoryEntries = new List<DirectoryEntry>();
+            return false;
+        }
+    }
+
+    private static string GetDirectoryDisplayName(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (string.IsNullOrEmpty(name))
+        {
+            name = new DirectoryInfo(path).Name;
+        }
+
+        return string.IsNullOrEmpty(name) ? path : name;
+    }
+
+    private static DirectoryInfo? TryGetParentDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Directory.GetParent(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string GetDefaultDirectory()
+    {
+        var candidates = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            Environment.CurrentDirectory
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(candidate) && Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return Environment.CurrentDirectory;
+    }
+
+    private sealed record DirectoryEntry(string Name, string FullPath);
 }
