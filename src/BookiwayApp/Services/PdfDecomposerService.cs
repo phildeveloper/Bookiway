@@ -12,9 +12,9 @@ public sealed class PdfDecomposerService
 {
     private readonly ILogger<PdfDecomposerService> _logger;
 
-    public PdfDecomposerService(ILogger<PdfDecomposerService> logger)
+    public PdfDecomposerService(ILogger<PdfDecomposerService>? logger = null)
     {
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<PdfDecomposerService>.Instance;
     }
 
     public async Task<PdfDecompositionResult> DecomposeAsync(Stream pdfStream, string outputDirectory, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
@@ -54,7 +54,6 @@ public sealed class PdfDecomposerService
             var height = pageReader.GetPageHeight();
 
             using var image = Image.LoadPixelData<Bgra32>(rawBytes, width, height);
-            image.Mutate(ctx => ctx.Flip(FlipMode.Vertical));
 
             var fileName = $"page-{pageIndex + 1:D3}.png";
             var destinationPath = Path.Combine(outputDirectory, fileName);
