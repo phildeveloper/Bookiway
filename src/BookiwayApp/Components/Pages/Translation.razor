@@ -1,0 +1,40 @@
+@page "/translation"
+
+<PageTitle>Translation</PageTitle>
+
+<div class="translation-page">
+    <h1 class="translation-title">
+        <span class="spark">Seamless</span> Translation Studio
+    </h1>
+    <p class="translation-subtitle">
+        Upload your PDF document and set the stage for an elegant, multilingual reading experience.
+    </p>
+
+    <div class="upload-card">
+        <h2 class="upload-heading">Select your document</h2>
+        <p class="upload-description">
+            Choose a PDF file to begin preparing your translation workflow.
+        </p>
+
+        <label class="file-picker" for="pdfUpload">
+            <span class="file-picker-icon" aria-hidden="true">📄</span>
+            <span class="file-picker-text">Browse PDF files</span>
+            <InputFile id="pdfUpload" OnChange="HandleFileSelected" accept="application/pdf" />
+        </label>
+        <p class="upload-hint">Supported format: PDF (10 MB max).</p>
+
+        @if (!string.IsNullOrEmpty(_fileName))
+        {
+            <p class="selected-file">Selected file: @_fileName</p>
+        }
+    </div>
+</div>
+
+@code {
+    private string? _fileName;
+
+    private void HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        _fileName = e.File?.Name;
+    }
+}
