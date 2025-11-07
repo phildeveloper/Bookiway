@@ -1,5 +1,9 @@
 @page "/translation"
 
+@using BookiwayApp.Services
+
+@inject PdfDecomposerService PdfDecomposer
+
 <PageTitle>Translation</PageTitle>
 
 <div class="translation-page">
@@ -27,14 +31,106 @@
         {
             <p class="selected-file">Selected file: @_fileName</p>
         }
+
+        <div class="directory-input">
+            <label class="directory-label" for="outputDirectory">Save pages to</label>
+            <InputText id="outputDirectory" class="directory-textbox" placeholder="C:\\Documents\\PdfPages" @bind-Value="_outputDirectory" />
+            <p class="directory-hint">Specify the destination folder on your computer.</p>
+        </div>
+
+        <button class="decompose-button" @onclick="StartDecompositionAsync" disabled="@IsDecomposeDisabled">
+            @if (_isProcessing)
+            {
+                <span class="spinner" aria-hidden="true"></span>
+            }
+            <span>Decompose</span>
+        </button>
+
+        @if (_isProcessing)
+        {
+            <div class="decompose-progress" role="status" aria-live="polite">
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" style="width: @_progressPercent%;"></div>
+                </div>
+                <span class="progress-text">@_progressPercent%</span>
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_statusMessage))
+        {
+            var statusClass = _isSuccess ? "status-message success" : "status-message error";
+            <div class="@statusClass">@_statusMessage</div>
+        }
     </div>
 </div>
 
 @code {
+    private const long MaxFileSize = 10 * 1024 * 1024;
+
+    private IBrowserFile? _selectedFile;
     private string? _fileName;
+    private string _outputDirectory = string.Empty;
+    private bool _isProcessing;
+    private int _progressPercent;
+    private string? _statusMessage;
+    private bool _isSuccess;
+
+    private bool IsDecomposeDisabled => _selectedFile is null || string.IsNullOrWhiteSpace(_outputDirectory) || _isProcessing;
 
     private void HandleFileSelected(InputFileChangeEventArgs e)
     {
+        _selectedFile = e.File;
         _fileName = e.File?.Name;
+        _statusMessage = null;
+    }
+
+    private async Task StartDecompositionAsync()
+    {
+        if (_selectedFile is null)
+        {
+            _statusMessage = "Please select a PDF file before decomposing.";
+            _isSuccess = false;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_outputDirectory))
+        {
+            _statusMessage = "Please specify the destination directory.";
+            _isSuccess = false;
+            return;
+        }
+
+        _isProcessing = true;
+        _statusMessage = null;
+        _isSuccess = false;
+        _progressPercent = 0;
+
+        var progress = new Progress<double>(value =>
+        {
+            _progressPercent = (int)Math.Clamp(Math.Round(value * 100, MidpointRounding.AwayFromZero), 0, 100);
+            InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            await using var stream = _selectedFile.OpenReadStream(MaxFileSize);
+            var result = await PdfDecomposer.DecomposeAsync(stream, _outputDirectory, progress);
+
+            _isSuccess = true;
+            _statusMessage = result.PageCount == 0
+                ? "No pages were found in the PDF document."
+                : $"Successfully decomposed {result.PageCount} page(s) to '{_outputDirectory}'.";
+            _progressPercent = 100;
+        }
+        catch (Exception ex)
+        {
+            _isSuccess = false;
+            _statusMessage = $"Failed to decompose the PDF: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 }

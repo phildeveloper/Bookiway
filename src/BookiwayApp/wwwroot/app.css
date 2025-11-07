@@ -49,3 +49,212 @@ h1:focus {
 .darker-border-checkbox.form-check-input {
     border-color: #929292;
 }
+
+.translation-page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 3rem 1rem;
+    color: #14213d;
+}
+
+.translation-title {
+    font-size: clamp(2rem, 4vw, 3rem);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.translation-title .spark {
+    color: #f25f4c;
+}
+
+.translation-subtitle {
+    max-width: 620px;
+    text-align: center;
+    margin-bottom: 2rem;
+    font-size: 1.1rem;
+    color: #4f5d75;
+}
+
+.upload-card {
+    width: min(640px, 100%);
+    background: #ffffff;
+    border-radius: 18px;
+    box-shadow: 0 15px 45px rgba(15, 23, 42, 0.12);
+    padding: 2.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.upload-heading {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.upload-description {
+    margin: 0;
+    color: #6b7280;
+}
+
+.file-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.9rem 1.4rem;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    color: #ffffff;
+    border-radius: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    overflow: hidden;
+    width: fit-content;
+}
+
+.file-picker input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.file-picker-icon {
+    font-size: 1.4rem;
+}
+
+.upload-hint,
+.directory-hint {
+    font-size: 0.9rem;
+    color: #9ca3af;
+    margin: 0;
+}
+
+.selected-file {
+    margin: 0;
+    font-size: 0.95rem;
+    color: #374151;
+}
+
+.directory-input {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.directory-label {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.directory-textbox {
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    padding: 0.7rem 0.9rem;
+    font-size: 1rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.directory-textbox:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.decompose-button {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.85rem 1.6rem;
+    background: #10b981;
+    color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.decompose-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 25px rgba(16, 185, 129, 0.35);
+}
+
+.decompose-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+    box-shadow: none;
+}
+
+.spinner {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.decompose-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.progress-bar-track {
+    flex: 1;
+    height: 0.8rem;
+    background: #e5e7eb;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(135deg, #2563eb, #60a5fa);
+    transition: width 0.2s ease;
+}
+
+.progress-text {
+    font-weight: 600;
+    color: #1f2937;
+    min-width: 3ch;
+    text-align: right;
+}
+
+.status-message {
+    border-radius: 12px;
+    padding: 0.9rem 1.1rem;
+    font-weight: 500;
+}
+
+.status-message.success {
+    background: #ecfdf5;
+    color: #047857;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.status-message.error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+@media (max-width: 640px) {
+    .upload-card {
+        padding: 1.8rem;
+    }
+
+    .decompose-button {
+        width: 100%;
+        justify-content: center;
+    }
+}
