@@ -1,0 +1,119 @@
+.translation-page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 4rem;
+    color: #1f2933;
+}
+
+.translation-title {
+    font-size: clamp(2.25rem, 3vw + 1.5rem, 3.5rem);
+    font-weight: 700;
+    line-height: 1.1;
+    margin-bottom: 1rem;
+    color: #0f172a;
+}
+
+.translation-title .spark {
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    display: inline-block;
+    margin-right: 0.4rem;
+}
+
+.translation-subtitle {
+    font-size: 1.1rem;
+    line-height: 1.6;
+    color: #4b5563;
+    margin-bottom: 2.5rem;
+    max-width: 40rem;
+}
+
+.upload-card {
+    background: linear-gradient(145deg, rgba(37, 99, 235, 0.08), rgba(124, 58, 237, 0.08));
+    border-radius: 1.25rem;
+    padding: 2.5rem 2rem;
+    box-shadow: 0 28px 60px rgba(15, 23, 42, 0.15);
+    backdrop-filter: blur(6px);
+}
+
+.upload-heading {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: #111827;
+}
+
+.upload-description {
+    margin-bottom: 1.75rem;
+    color: #374151;
+}
+
+.file-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.9rem 1.6rem;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: #ffffff;
+    font-weight: 600;
+    cursor: pointer;
+    overflow: hidden;
+    box-shadow: 0 18px 32px rgba(37, 99, 235, 0.28);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.file-picker:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 22px 40px rgba(124, 58, 237, 0.28);
+}
+
+.file-picker:active {
+    transform: translateY(1px);
+}
+
+.file-picker-icon {
+    font-size: 1.4rem;
+}
+
+.file-picker-text {
+    font-size: 1rem;
+}
+
+.file-picker ::deep input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.upload-hint {
+    margin-top: 1.5rem;
+    font-size: 0.95rem;
+    color: #475569;
+}
+
+.selected-file {
+    margin-top: 0.75rem;
+    font-size: 1rem;
+    font-weight: 500;
+    color: #1d4ed8;
+}
+
+@media (max-width: 640px) {
+    .translation-page {
+        padding: 2.5rem 1.25rem 3rem;
+    }
+
+    .upload-card {
+        padding: 2rem 1.5rem;
+    }
+
+    .file-picker {
+        width: 100%;
+        justify-content: center;
+    }
+}
