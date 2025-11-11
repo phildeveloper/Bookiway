@@ -1,7 +1,9 @@
-using System.Net.Http;
+﻿using System.Net.Http;
+using System;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using System.Net;
 
 namespace BookiwayApp.Services;
 
@@ -12,6 +14,16 @@ public sealed class GeminiTranslationService
     private readonly string _apiKey;
 
     private const string MODEL_NAME = "gemini-2.5-flash";
+    public const string DefaultPrompt = """
+Ты — переводчик художественных и деловых текстов. Выполняй строковый перевод таблицы из двух колонок:
+1. В первой колонке сохраняй оригинальные фразы как есть.
+2. Во второй колонке размещай переведённый текст.
+В требования входит:
+- Сохраняй регистр, выделение и переносы строки, если это влияет на смысл.
+- Не добавляй собственных комментариев.
+- Если текст нельзя прочитать, пометь ячейку как «[неразборчиво]».
+- Используй современной литературный русский язык без сленга.
+""";
 
     public GeminiTranslationService(IHttpClientFactory httpClientFactory, ILogger<GeminiTranslationService> logger, IConfiguration configuration)
     {
@@ -20,7 +32,7 @@ public sealed class GeminiTranslationService
         _apiKey = configuration["Gemini:ApiKey"] ?? string.Empty;
     }
 
-    public async Task<int> TranslateRangeAsync(string imagesDirectory, int startPage, int endPage, string htmlOutputDirectory, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<int> TranslateRangeAsync(string imagesDirectory, int startPage, int endPage, string htmlOutputDirectory, string? promptText = null, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(imagesDirectory) || !Directory.Exists(imagesDirectory))
         {
@@ -38,6 +50,7 @@ public sealed class GeminiTranslationService
         }
 
         Directory.CreateDirectory(htmlOutputDirectory);
+        Directory.CreateDirectory(Path.Combine(htmlOutputDirectory, "imgs"));
 
         var files = new List<(string Path, int Page)>();
         foreach (var path in Directory.GetFiles(imagesDirectory, "page-*.png"))
@@ -61,6 +74,8 @@ public sealed class GeminiTranslationService
             return 0;
         }
 
+        var effectivePrompt = string.IsNullOrWhiteSpace(promptText) ? DefaultPrompt : promptText!;
+
         for (int i = 0; i < total; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -68,9 +83,17 @@ public sealed class GeminiTranslationService
             var imagePath = files[i].Path;
             var pageIndexInSelection = i + 1;
 
-            var translation = await GetGeminiTranslationAsync(imagePath, cancellationToken);
+            var translation = await GetGeminiTranslationAsync(imagePath, effectivePrompt, cancellationToken);
+            var relativeImagePath = await CopyImageForStaticHostingAsync(imagePath, htmlOutputDirectory, cancellationToken);
 
-            await CreateHtmlPageAsync(translation, pageIndexInSelection, total, htmlOutputDirectory, Path.GetFileName(imagePath), cancellationToken);
+            await CreateHtmlPageAsync(
+                translation,
+                pageIndexInSelection,
+                total,
+                htmlOutputDirectory,
+                Path.GetFileName(imagePath),
+                relativeImagePath,
+                cancellationToken);
 
             progress?.Report((double)pageIndexInSelection / total);
 
@@ -84,7 +107,22 @@ public sealed class GeminiTranslationService
         return total;
     }
 
-    private async Task<string> GetGeminiTranslationAsync(string imagePath, CancellationToken cancellationToken)
+    private static async Task<string> CopyImageForStaticHostingAsync(string imagePath, string htmlOutputFolder, CancellationToken cancellationToken)
+    {
+        var staticFolder = Path.Combine(htmlOutputFolder, "imgs");
+        Directory.CreateDirectory(staticFolder);
+
+        var fileName = Path.GetFileName(imagePath);
+        var destinationPath = Path.Combine(staticFolder, fileName);
+
+        await using var sourceStream = File.OpenRead(imagePath);
+        await using var destinationStream = File.Create(destinationPath);
+        await sourceStream.CopyToAsync(destinationStream, cancellationToken);
+
+        return Path.Combine("imgs", fileName).Replace('\\', '/');
+    }
+
+    private async Task<string> GetGeminiTranslationAsync(string imagePath, string prompt, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_apiKey))
         {
@@ -111,21 +149,6 @@ public sealed class GeminiTranslationService
 
                 var client = _httpClientFactory.CreateClient(nameof(GeminiTranslationService));
                 client.Timeout = TimeSpan.FromSeconds(300);
-
-                var prompt = @"Выполни параллельный перевод текста в формате таблицы.
-1-я колонка: Оригинальный текст на английском языке.
-2-я колонка: Перевод на русский язык.
-Ключевые требования к переводу:
-Естественность и Адаптация: Переводи естественно и литературно на русский язык. Адаптируй синтаксис, грамматику и лексику так, чтобы русский текст звучал понятно, грамотно и естественно для носителя языка. Категорически исключи бессмысленный дословный перевод, сохраняющий английский синтаксис.
-Сленг и Идиомы: Переводи сленговые выражения, идиомы и разговорные фразы их наиболее точными, естественными и смысловыми русскими эквивалентами.
-(Пример: ""I gotta go"" → ""Мне нужно идти"")
-Сохранение Структуры:
-Не пропускай ни одного предложения, даже короткого.
-Сохраняй исходный порядок и структуру абзацев.
-Не объединяй и не разделяй предложения. Каждое предложение оригинала должно соответствовать одной строке перевода.
-Формат Ответа:
-Твой ответ должен быть ИСКЛЮЧИТЕЛЬНО таблицей в формате Markdown.
-Исключи любые вступительные, заключительные или пояснительные тексты.";
 
                 var request = new
                 {
@@ -207,190 +230,388 @@ public sealed class GeminiTranslationService
 <html lang=""ru"">
 <head>
     <meta charset=""UTF-8"">
-    <title>Начало книги</title>
+    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
+    <title>Bookiway · Перевод</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, ""Segoe UI"", ""Inter"", sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        body.light-mode {
+            background: #f8fafc;
+            color: #0f172a;
+        }
+        .message {
+            text-align: center;
+            padding: 2rem 2.5rem;
+            border-radius: 24px;
+            background: rgba(15, 23, 42, 0.45);
+            font-size: 1.1rem;
+        }
+        body.light-mode .message {
+            background: rgba(255, 255, 255, 0.9);
+        }
+    </style>
 </head>
 <body>
-    <p>Загрузка последней прочитанной страницы...</p>
+    <div class=""message"">
+        <p>Подготавливаем последнюю страницу…</p>
+    </div>
     <script>
-        const currentTheme = localStorage.getItem('theme') || 'dark';
-        document.body.className = currentTheme + '-mode';
-        const lastPage = localStorage.getItem('lastReadPage');
-        let targetPage = 1;
-        if (lastPage) { targetPage = parseInt(lastPage, 10); }
-        const formattedPage = targetPage.toString().padStart(4, '0');
-        window.location.replace(`page-${formattedPage}.html`);
+        const storedTheme = localStorage.getItem('theme') || 'dark';
+        if (storedTheme === 'light') {
+            document.body.classList.add('light-mode');
+        }
+        const lastPage = parseInt(localStorage.getItem('lastReadPage') || '1', 10);
+        const safePage = Number.isFinite(lastPage) && lastPage > 0 ? lastPage : 1;
+        const formatted = safePage.toString().padStart(4, '0');
+        window.location.replace(`page-${formatted}.html`);
     </script>
 </body>
 </html>";
-
         var outputPath = Path.Combine(htmlOutputFolder, "index.html");
         await File.WriteAllTextAsync(outputPath, indexHtml, Encoding.UTF8, cancellationToken);
     }
 
-    private static async Task CreateHtmlPageAsync(string markdownContent, int pageIndex, int totalPages, string htmlOutputFolder, string originalFileName, CancellationToken cancellationToken)
+    private static async Task CreateHtmlPageAsync(string markdownContent, int pageIndex, int totalPages, string htmlOutputFolder, string originalFileName, string originalImageRelativePath, CancellationToken cancellationToken)
     {
-        var hasError = markdownContent.Contains("| ERROR: No valid translation returned.");
-        var errorMessage = "";
-        var tableRows = new StringBuilder();
+        var hasError = markdownContent.Contains("| ERROR: No valid translation returned.", StringComparison.Ordinal);
+        var safeOriginalName = WebUtility.HtmlEncode(originalFileName);
+
+        string tableContent;
         if (hasError)
         {
-            var errorLine = markdownContent.Split('\n').FirstOrDefault(line => line.Contains("| ОШИБКА:"));
-            if (errorLine != null)
-            {
-                var parts = errorLine.Split('|', StringSplitOptions.TrimEntries).Where(p => p.StartsWith("ОШИБКА:")).FirstOrDefault();
-                errorMessage = (parts?.Replace("ОШИБКА: ", "") ?? "Перевод не получен. Проверьте консоль.");
-            }
-            tableRows.AppendLine($@"
-            <tr><td colspan=""2"" class=""error-message"">
-                ❌ **СТРАНИЦА НЕ ПЕРЕВЕДЕНА** ❌<br><br>
-                **Причина:** {errorMessage} <br><br>
-                Обратите внимание на этот файл: **{originalFileName}**
-            </td></tr>");
+            tableContent = $$"""
+<div class="error-card">
+    <p class="error-title">Не удалось получить перевод</p>
+    <p>Gemini не вернул корректный результат. Попробуйте ещё раз.</p>
+    <p>Файл: {{safeOriginalName}}</p>
+</div>
+""";
         }
         else
         {
+            var rowsBuilder = new StringBuilder();
             var lines = markdownContent.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Where(line => !line.Contains("---") && !line.Contains("1-я колонка") && !line.Contains("Оригинальный текст"))
+                .Where(line => !line.TrimStart().StartsWith("---", StringComparison.Ordinal))
                 .ToList();
+
             foreach (var line in lines)
             {
-                var parts = line.Split('|', StringSplitOptions.TrimEntries).Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-                if (parts.Length >= 2)
+                var cells = line.Split('|', StringSplitOptions.TrimEntries)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .ToArray();
+
+                if (cells.Length >= 2)
                 {
-                    tableRows.AppendLine("<tr>");
-                    tableRows.AppendLine($"<td>{parts[0]}</td>");
-                    tableRows.AppendLine($"<td>{parts[1]}</td>");
-                    tableRows.AppendLine("</tr>");
+                    var original = WebUtility.HtmlEncode(cells[0]);
+                    var translation = WebUtility.HtmlEncode(cells[1]);
+                    rowsBuilder.AppendLine("<tr>");
+                    rowsBuilder.AppendLine($"<td>{original}</td>");
+                    rowsBuilder.AppendLine($"<td>{translation}</td>");
+                    rowsBuilder.AppendLine("</tr>");
                 }
             }
+
+            if (rowsBuilder.Length == 0)
+            {
+                rowsBuilder.AppendLine("<tr><td colspan=\"2\">Содержимое отсутствует.</td></tr>");
+            }
+
+            var rowsMarkup = rowsBuilder.ToString();
+            tableContent = $$"""
+<table class="translation-table">
+    <thead>
+        <tr>
+            <th>Оригинал</th>
+            <th>Перевод</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{rowsMarkup}}
+    </tbody>
+</table>
+""";
         }
 
         var prevIndex = pageIndex - 1;
         var nextIndex = pageIndex + 1;
-        var prevLink = prevIndex >= 1 ? $"page-{prevIndex:D4}.html" : "#";
-        var nextLink = nextIndex <= totalPages ? $"page-{nextIndex:D4}.html" : "#";
+        var prevHref = prevIndex >= 1 ? $"page-{prevIndex:D4}.html" : "#";
+        var nextHref = nextIndex <= totalPages ? $"page-{nextIndex:D4}.html" : "#";
+        var prevDisabled = prevIndex < 1 ? " disabled" : string.Empty;
+        var nextDisabled = nextIndex > totalPages ? " disabled" : string.Empty;
+
+        var safeImagePath = string.IsNullOrWhiteSpace(originalImageRelativePath)
+            ? string.Empty
+            : originalImageRelativePath.Replace("\\", "/");
+        var safeImagePathAttribute = WebUtility.HtmlEncode(safeImagePath);
+
+        var originalButton = string.IsNullOrEmpty(safeImagePathAttribute)
+            ? "<button type=\"button\" class=\"pill-button\" disabled>Оригинал недоступен</button>"
+            : $"<button type=\"button\" class=\"pill-button\" data-image=\"{safeImagePathAttribute}\" onclick=\"openOriginal(this)\">Посмотреть оригинал</button>";
+
         var currentPageFileName = $"page-{pageIndex:D4}.html";
         var outputPath = Path.Combine(htmlOutputFolder, currentPageFileName);
 
-        var html = $@"<!DOCTYPE html>
-<html lang=""ru"">
+        var html = $$"""
+<!DOCTYPE html>
+<html lang="ru">
 <head>
-    <meta charset=""UTF-8"">
-    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
-    <title>Перевод книги - Страница {pageIndex} из {totalPages}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bookiway · Страница {{pageIndex}} из {{totalPages}}</title>
     <style>
-        /* Полный стиль как в консольной утилите */
-        body {{ 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 0; 
-            background-color: #f7f7f7; 
-            color: #333; 
-            min-height: 100vh;
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+        body.light-mode {
+            background: #f8fafc;
+            color: #0f172a;
+        }
+        .page {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2.5rem 1.5rem 3rem;
             display: flex;
             flex-direction: column;
-        }}
-        .container {{ background-color: #fff; }}
-        .top-navigation, .bottom-navigation {{ 
-            display: flex; justify-content: space-between; align-items: center; 
-            padding: 8px 5px; background-color: #eee; border-bottom: 1px solid #ddd; flex-wrap: wrap; 
-        }}
-        .bottom-navigation {{ border-top: 1px solid #ddd; border-bottom: none; }}
-        .translation-table {{ width: 100%; border-collapse: collapse; margin: 5px 0; flex-grow: 1; }}
-        .translation-table td {{ padding: 8px 5px; border: 1px solid #e0e0e0; text-align: left; vertical-align: top; line-height: 1.4; width: 50%; font-size: 0.9em; }}
-        .translation-table th {{ padding: 8px 5px; border: 1px solid #e0e0e0; text-align: center; background-color: #f0f8ff; font-weight: bold; color: #1a1a1a; }}
-        .error-message {{ background-color: #ffe0e0; color: #cc0000; font-weight: bold; text-align: center; padding: 20px; font-size: 1.1em; line-height: 1.6; }}
-        body.dark-mode {{ background-color: #1a1a1a; color: #ccc; }}
-        body.dark-mode .container {{ background-color: #2c2c2c; }}
-        body.dark-mode .top-navigation, body.dark-mode .bottom-navigation {{ background-color: #3a3a3a; border-bottom-color: #555; border-top-color: #555; }}
-        body.dark-mode .translation-table td {{ border: 1px solid #555; }}
-        body.dark-mode .translation-table th {{ background-color: #4a4a4a; color: #ccc; border: 1px solid #555; }}
-        body.dark-mode .error-message {{ background-color: #550000; color: #ffcccc; }}
-        #themeToggle, #themeToggleBottom {{ background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 0 10px; color: #444; transition: color 0.3s; }}
-        .dark-mode #themeToggle, .dark-mode #themeToggleBottom {{ color: #f0c451; }}
-        .page-header {{ font-size: 1.8em; font-weight: 600; text-align: center; width: 100%; margin: 5px 0; }}
-        .source-info {{ font-size: 0.7em; color: #888; text-align: center; margin-top: 0; margin-bottom: 5px; }}
-        .navigation-buttons {{ display: flex; gap: 8px; flex-shrink: 0; }}
-        .go-to-page-controls {{ display: flex; align-items: center; gap: 5px; }}
-        .go-to-page-controls input {{ width: 45px; padding: 6px; border-radius: 5px; text-align: center; font-size: 0.85em; }}
-        @media (max-width: 600px) {{
-            .top-navigation, .bottom-navigation {{ flex-direction: column; gap: 5px; padding: 5px; }}
-            .navigation-buttons {{ width: 100%; justify-content: space-between; }}
-            .go-to-page-controls {{ width: 100%; justify-content: space-between; }}
-            .go-to-page-controls input {{ width: 50%; }}
-        }}
+            gap: 1.5rem;
+        }
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: flex-start;
+        }
+        .brand {
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin: 0 0 0.35rem 0;
+        }
+        .page-header h1 {
+            margin: 0;
+            font-size: clamp(1.4rem, 2.5vw, 2rem);
+        }
+        .meta {
+            margin: 0.35rem 0 0;
+            color: #94a3b8;
+            font-size: 0.95rem;
+        }
+        .header-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .pill-button {
+            border: none;
+            border-radius: 999px;
+            padding: 0.6rem 1.4rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(226, 232, 240, 0.15);
+            color: inherit;
+        }
+        .pill-button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .navigator {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            border-radius: 20px;
+            padding: 1rem 1.25rem;
+            background: rgba(15, 23, 42, 0.35);
+        }
+        body.light-mode .navigator {
+            background: rgba(15, 23, 42, 0.05);
+        }
+        .navigator.stacked {
+            justify-content: center;
+        }
+        .nav-link {
+            color: inherit;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .nav-link.disabled {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+        .goto {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .goto input {
+            width: 90px;
+            padding: 0.45rem 0.6rem;
+            border-radius: 12px;
+            border: 1px solid rgba(226, 232, 240, 0.4);
+            background: transparent;
+            color: inherit;
+        }
+        .goto button {
+            border: none;
+            border-radius: 12px;
+            padding: 0.45rem 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        body.light-mode .goto input {
+            border-color: rgba(15, 23, 42, 0.2);
+        }
+        .translation-section {
+            border-radius: 28px;
+            padding: 1.5rem;
+            background: rgba(15, 23, 42, 0.4);
+        }
+        body.light-mode .translation-section {
+            background: #fff;
+        }
+        .translation-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .translation-table th,
+        .translation-table td {
+            border: 1px solid rgba(226, 232, 240, 0.2);
+            padding: 0.9rem;
+            vertical-align: top;
+            text-align: left;
+        }
+        body.light-mode .translation-table th,
+        body.light-mode .translation-table td {
+            border-color: rgba(15, 23, 42, 0.08);
+        }
+        .translation-table th {
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            letter-spacing: 0.08em;
+        }
+        .error-card {
+            border-radius: 20px;
+            padding: 1.5rem;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+        .error-title {
+            margin-top: 0;
+            font-weight: 700;
+        }
+        @media (max-width: 640px) {
+            .page {
+                padding: 1.5rem 1rem 2rem;
+            }
+            .navigator {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .goto {
+                width: 100%;
+            }
+            .goto input {
+                flex: 1;
+            }
+            .header-actions {
+                width: 100%;
+                justify-content: flex-start;
+            }
+        }
     </style>
 </head>
-<body onload=""loadTheme(); saveCurrentPage();"">
-    <div class=""container"">
-        <div class=""top-navigation"">
-            <div class=""page-header"">Страница {pageIndex} из {totalPages}</div>
-            <p class=""source-info"">Источник: {originalFileName}</p>
-            <div class=""navigation-buttons"">
-                <a href=""{prevLink}""{(prevIndex < 1 ? " disabled" : "")}>&larr; Назад</a>
-                <a href=""{nextLink}""{(nextIndex > totalPages ? " disabled" : "")}>Вперед &rarr;</a>
+<body onload="initializePage()">
+    <div class="page">
+        <header class="page-header">
+            <div>
+                <p class="brand">Bookiway</p>
+                <h1>Страница {{pageIndex}} из {{totalPages}}</h1>
+                <p class="meta">Оригинальный файл: {{safeOriginalName}}</p>
             </div>
-            <div class=""go-to-page-controls"">
-                <input type=""number"" id=""pageInputTop"" min=""1"" max=""{totalPages}"" value=""{pageIndex}"" placeholder=""{pageIndex}"">
-                <button onclick=""goToPage(document.getElementById('pageInputTop').value)"">Перейти</button>
+            <div class="header-actions">
+                <button type="button" class="pill-button theme-toggle" id="themeToggleTop" onclick="toggleTheme()">&#9728;</button>
+                {{originalButton}}
             </div>
-            <button id=""themeToggle"" onclick=""toggleTheme()"">🌙</button>
-        </div>
-
-        <table class=""translation-table"">
-            <tbody>
-                {(hasError ? "" : @"
-                <tr>
-                    <th>Оригинальный текст</th>
-                    <th>Перевод</th>
-                </tr>
-                ")}
-                {tableRows}
-            </tbody>
-        </table>
-
-        <div class=""bottom-navigation"">
-            <div class=""navigation-buttons"">
-                <a href=""{prevLink}""{(prevIndex < 1 ? " disabled" : "")}>&larr; Назад</a>
-                <a href=""{nextLink}""{(nextIndex > totalPages ? " disabled" : "")}>Вперед &rarr;</a>
+        </header>
+        <nav class="navigator">
+            <a href="{{prevHref}}" class="nav-link{{prevDisabled}}" aria-disabled="{{(prevIndex < 1).ToString().ToLowerInvariant()}}">&larr; Назад</a>
+            <div class="goto">
+                <input type="number" id="pageInputTop" min="1" max="{{totalPages}}" value="{{pageIndex}}">
+                <button type="button" onclick="goToPage(document.getElementById('pageInputTop').value)">Перейти</button>
             </div>
-            <div class=""go-to-page-controls"">
-                <input type=""number"" id=""pageInputBottom"" min=""1"" max=""{totalPages}"" value=""{pageIndex}"" placeholder=""{pageIndex}"">
-                <button onclick=""goToPage(document.getElementById('pageInputBottom').value)"">Перейти</button>
+            <a href="{{nextHref}}" class="nav-link{{nextDisabled}}" aria-disabled="{{(nextIndex > totalPages).ToString().ToLowerInvariant()}}">Вперёд &rarr;</a>
+        </nav>
+        <section class="translation-section">
+            {{tableContent}}
+        </section>
+        <nav class="navigator stacked">
+            <a href="{{prevHref}}" class="nav-link{{prevDisabled}}" aria-disabled="{{(prevIndex < 1).ToString().ToLowerInvariant()}}">&larr; Назад</a>
+            <button type="button" class="pill-button theme-toggle" id="themeToggleBottom" onclick="toggleTheme()">&#9728;</button>
+            <div class="goto">
+                <input type="number" id="pageInputBottom" min="1" max="{{totalPages}}" value="{{pageIndex}}">
+                <button type="button" onclick="goToPage(document.getElementById('pageInputBottom').value)">Перейти</button>
             </div>
-            <button id=""themeToggleBottom"" onclick=""toggleTheme()"">🌙</button>
-        </div>
+            <a href="{{nextHref}}" class="nav-link{{nextDisabled}}" aria-disabled="{{(nextIndex > totalPages).ToString().ToLowerInvariant()}}">Вперёд &rarr;</a>
+        </nav>
     </div>
-
     <script>
-        function loadTheme() {{
-            const currentTheme = localStorage.getItem('theme') || 'dark';
-            document.body.className = currentTheme + '-mode';
-            document.getElementById('themeToggle').innerText = currentTheme === 'dark' ? '☀️' : '🌙';
-            document.getElementById('themeToggleBottom').innerText = currentTheme === 'dark' ? '☀️' : '🌙';
-        }}
-        function toggleTheme() {{
-            const currentTheme = localStorage.getItem('theme') || 'dark';
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-            localStorage.setItem('theme', newTheme);
-            document.body.className = newTheme + '-mode';
-            document.getElementById('themeToggle').innerText = newTheme === 'dark' ? '☀️' : '🌙';
-            document.getElementById('themeToggleBottom').innerText = newTheme === 'dark' ? '☀️' : '🌙';
-        }}
-        function saveCurrentPage() {{ localStorage.setItem('lastReadPage', {pageIndex}); }}
-        function goToPage(pageNumber) {{
-            const totalPages = {totalPages};
-            let pageNum = parseInt(pageNumber, 10);
-            if (isNaN(pageNum) || pageNum < 1) {{ pageNum = 1; }}
-            else if (pageNum > totalPages) {{ pageNum = totalPages; }}
-            localStorage.setItem('lastReadPage', pageNum);
-            window.location.href = `page-${{pageNum.toString().padStart(4, '0')}}.html`;
-        }}
+        function initializePage() {
+            loadTheme();
+            saveCurrentPage();
+        }
+        function loadTheme() {
+            const theme = localStorage.getItem('theme') || 'dark';
+            document.body.className = theme + '-mode';
+            updateThemeLabels(theme);
+        }
+        function toggleTheme() {
+            const current = localStorage.getItem('theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('theme', next);
+            document.body.className = next + '-mode';
+            updateThemeLabels(next);
+        }
+        function updateThemeLabels(theme) {
+            const label = theme === 'dark' ? '\u2600' : '\u263E';
+            document.querySelectorAll('.theme-toggle').forEach(btn => btn.textContent = label);
+        }
+        function saveCurrentPage() {
+            localStorage.setItem('lastReadPage', {{pageIndex}});
+        }
+        function goToPage(value) {
+            const total = {{totalPages}};
+            let target = parseInt(value, 10);
+            if (isNaN(target) || target < 1) { target = 1; }
+            if (target > total) { target = total; }
+            localStorage.setItem('lastReadPage', target);
+            const formatted = target.toString().padStart(4, '0');
+            window.location.href = `page-${formatted}.html`;
+        }
+        function openOriginal(button) {
+            const path = button?.getAttribute('data-image');
+            if (path) {
+                window.open(path, '_blank');
+            }
+        }
     </script>
 </body>
-</html>";
-
+</html>
+""";
         await File.WriteAllTextAsync(outputPath, html, Encoding.UTF8, cancellationToken);
     }
 }
-
-
