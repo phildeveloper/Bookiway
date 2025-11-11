@@ -3,6 +3,7 @@
 @layout EmptyLayout
 @rendermode InteractiveServer
 
+@using System.Globalization
 @using System.IO
 @using System.Linq
 @using BookiwayApp.Services
@@ -13,131 +14,151 @@
 
 <PageTitle>Translation</PageTitle>
 
-<div class="translation-page">
-    <h1 class="translation-title">Перевод документов</h1>
-    <p class="translation-subtitle">Выполните простые шаги без лишнего визуального шума.</p>
+<div class="translation-shell">
+    <header class="hero">
+        <span class="hero-brand">Bookiway</span>
+    </header>
 
-    <div class="upload-card">
-        <h2 class="upload-heading">1. Выберите PDF файл для перевода</h2>
-
-        <label class="file-picker" for="pdfUpload">
-            <span class="file-picker-icon" aria-hidden="true">📄</span>
-            <span class="file-picker-text">@(_fileName is null ? "Выбрать PDF файл" : _fileName)</span>
-            <InputFile id="pdfUpload" OnChange="HandleFileSelected" accept="application/pdf" />
-        </label>
-        <p class="upload-hint">Формат: PDF (до 10 МБ). Последний выбор сохраняется в cookies.</p>
-        @if (!string.IsNullOrWhiteSpace(_lastPdfName) && _selectedFile is null)
-        {
-            <p class="selected-file" aria-live="polite">Последний файл: @_lastPdfName (нужно выбрать снова)</p>
-        }
-
-        <div class="directory-input">
-            <h2 class="upload-heading" style="margin-top:1.25rem;">2. Выберите папку для сохранения страниц</h2>
-            <div class="directory-input-row">
-                <span class="directory-textbox" style="flex:1">@(_outputDirectory is null || _outputDirectory.Trim().Length==0 ? "Папка не выбрана" : _outputDirectory)</span>
-                <button type="button" class="browse-directory-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Images)" disabled="@_isProcessing">Выбрать…</button>
+    <section class="step-card">
+        <div class="step-heading">
+            <span class="step-number">01</span>
+            <div>
+                <h2>Подготовка файла</h2>
+                <p>Мы запоминаем каждый выбор, поэтому после перезапуска вы продолжите с того же места.</p>
             </div>
-            <p class="directory-hint">Путь выбирается только через проводник. Последний путь сохраняется в cookies.</p>
         </div>
 
-        <h2 class="upload-heading" style="margin-top:1.5rem;">3. Декомпозировать PDF на страницы</h2>
-        <button class="decompose-button" @onclick="StartDecompositionAsync" disabled="@IsDecomposeDisabled">
+        <div class="step-block">
+            <p class="step-label">PDF-файл</p>
+            <label class="file-picker" for="pdfUpload">
+                <span class="file-picker-icon" aria-hidden="true">📄</span>
+                <span class="file-picker-text">@(_fileName is null ? "Выбрать PDF" : _fileName)</span>
+                <InputFile id="pdfUpload" OnChange="HandleFileSelected" accept="application/pdf" />
+            </label>
+            <p class="muted-text">Файл до 10 МБ. Последний выбор сохраняем в cookies.</p>
+            @if (!string.IsNullOrWhiteSpace(_lastPdfName) && _selectedFile is null)
+            {
+                <p class="muted-link" aria-live="polite">Последний файл: @_lastPdfName</p>
+            }
+        </div>
+
+        <div class="step-block">
+            <p class="step-label">Папка для изображений</p>
+            <div class="input-row">
+                <span class="input-chip">@(!string.IsNullOrWhiteSpace(TrimmedOutputDirectory) ? TrimmedOutputDirectory : "Не выбрана")</span>
+                <button type="button" class="ghost-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Images)" disabled="@_isProcessing">Выбрать</button>
+            </div>
+            <p class="muted-text">Путь используется только локально и хранится в cookies.</p>
+        </div>
+
+        <div class="step-block">
+            <p class="step-label">Разложить PDF на страницы</p>
+            <button class="primary-button" @onclick="StartDecompositionAsync" disabled="@IsDecomposeDisabled">
+                @if (_isProcessing)
+                {
+                    <span class="spinner" aria-hidden="true"></span>
+                }
+                <span>@(_isProcessing ? "Обрабатываем..." : "Разложить")</span>
+            </button>
+
             @if (_isProcessing)
             {
-                <span class="spinner" aria-hidden="true"></span>
-            }
-            <span>Декомпозировать</span>
-        </button>
-
-        @if (_isProcessing)
-        {
-            <div class="decompose-progress" role="status" aria-live="polite">
-                <div class="progress-bar-track">
-                    <div class="progress-bar-fill" style="width: @_progressPercent%;"></div>
+                <div class="progress" role="status" aria-live="polite">
+                    <div class="progress-bar" style="width: @_progressPercent%;"></div>
                 </div>
-                <span class="progress-text">@_progressPercent%</span>
+                <p class="progress-value">@_progressPercent%</p>
+            }
+
+            @if (!string.IsNullOrEmpty(_statusMessage))
+            {
+                var statusClass = _isSuccess ? "status success" : "status error";
+                <p class="@statusClass">@_statusMessage</p>
+            }
+        </div>
+    </section>
+
+    <section class="step-card">
+        <div class="step-heading">
+            <span class="step-number">02</span>
+            <div>
+                <h2>Перевод диапазона</h2>
+                <p>Выберите страницы и папку для HTML, дальше всё сделает Gemini.</p>
             </div>
-        }
+        </div>
 
-        @if (!string.IsNullOrEmpty(_statusMessage))
-        {
-            var statusClass = _isSuccess ? "status-message success" : "status-message error";
-            <div class="@statusClass">@_statusMessage</div>
-        }
-
-        <div class="directory-input" style="margin-top:1.5rem">
-            <h2 class="upload-heading">4. Выберите номера страниц для перевода</h2>
-            <div class="directory-input-row">
-                <input type="number" min="1" max="@_totalPages" value="@_pageFrom" @oninput="OnPageFromChanged" class="directory-textbox" style="max-width:140px" />
-                <span>—</span>
-                <input type="number" min="1" max="@_totalPages" value="@_pageTo" @oninput="OnPageToChanged" class="directory-textbox" style="max-width:140px" />
-                <span style="margin-left:.5rem">из @_totalPages</span>
+        <div class="step-block">
+            <p class="step-label">Диапазон страниц</p>
+            <div class="range-row">
+                <input type="number" min="1" max="@_totalPages" value="@_pageFrom" @oninput="OnPageFromChangedAsync" class="range-input" />
+                <span class="range-separator">—</span>
+                <input type="number" min="1" max="@_totalPages" value="@_pageTo" @oninput="OnPageToChangedAsync" class="range-input" />
+                <span class="range-total">@(_totalPages > 0 ? $"Всего: {_totalPages}" : "Пока нет страниц")</span>
             </div>
             @if (!string.IsNullOrEmpty(_pageRangeError))
             {
-                <div class="directory-error" role="alert" style="margin-top:.5rem">@_pageRangeError</div>
-            }
-            @if (_totalPages == 0)
-            {
-                <div class="status-message" style="margin-top:.75rem">Страницы не найдены. Укажите папку со страницами (шаг 2) или выполните декомпозицию (шаг 3).</div>
+                <p class="status error">@_pageRangeError</p>
             }
         </div>
 
-        <div class="directory-input" style="margin-top:1.25rem">
-            <h2 class="upload-heading">5. Папка для сохранения HTML перевода</h2>
-            <div class="directory-input-row">
-                <span class="directory-textbox" style="flex:1">@(_translationOutputDirectory is null || _translationOutputDirectory.Trim().Length==0 ? "Папка не выбрана" : _translationOutputDirectory)</span>
-                <button type="button" class="browse-directory-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Html)" disabled="@(_isTranslating)">Выбрать…</button>
+        <div class="step-block">
+            <p class="step-label">Папка для HTML</p>
+            <div class="input-row">
+                <span class="input-chip">@(!string.IsNullOrWhiteSpace(TrimmedTranslationDirectory) ? TrimmedTranslationDirectory : "Не выбрана")</span>
+                <button type="button" class="ghost-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Html)" disabled="@_isTranslating">Выбрать</button>
             </div>
-            <p class="directory-hint">Последний путь сохраняется в cookies.</p>
+            <p class="muted-text">Сохраняем путь в cookies, чтобы не вводить его заново.</p>
         </div>
 
-        <div style="margin-top:1.25rem">
-            <h2 class="upload-heading">6. Выполнить перевод</h2>
-            <button class="browse-directory-button" @onclick="StartTranslationAsync" disabled="@(!_isPageRangeValid || _totalPages == 0 || string.IsNullOrWhiteSpace(_translationOutputDirectory) || _isTranslating)">Перевести с помощью Gemini</button>
+        <div class="step-block">
+            <p class="step-label">Запуск перевода</p>
+            <button class="primary-button" @onclick="StartTranslationAsync" disabled="@(!_isPageRangeValid || _totalPages == 0 || string.IsNullOrWhiteSpace(TrimmedTranslationDirectory) || _isTranslating)">
+                @if (_isTranslating)
+                {
+                    <span class="spinner" aria-hidden="true"></span>
+                }
+                <span>@(_isTranslating ? "Переводим..." : "Перевести с помощью Gemini")</span>
+            </button>
 
             @if (_isTranslating)
             {
-                <div class="decompose-progress" role="status" aria-live="polite" style="margin-top:.75rem">
-                    <div class="progress-bar-track">
-                        <div class="progress-bar-fill" style="width: @_translateProgress%;"></div>
-                    </div>
-                    <span class="progress-text">@_translateProgress%</span>
+                <div class="progress" role="status" aria-live="polite">
+                    <div class="progress-bar" style="width: @_translateProgress%;"></div>
                 </div>
+                <p class="progress-value">@_translateProgress%</p>
             }
 
             @if (!string.IsNullOrEmpty(_translateStatus))
             {
-                var tClass = _translateSuccess ? "status-message success" : "status-message error";
-                <div class="@tClass" style="margin-top:.75rem">@_translateStatus</div>
+                var tClass = _translateSuccess ? "status success" : "status error";
+                <p class="@tClass">@_translateStatus</p>
             }
         </div>
-    </div>
+    </section>
 
     @if (_isDirectoryPickerOpen)
     {
         <div class="directory-modal" role="dialog" aria-modal="true">
             <div class="directory-modal-content">
                 <div class="directory-modal-header">
-                    <h3>Select destination folder</h3>
+                    <h3>Выбор папки</h3>
                     <p class="directory-modal-path" title="@_directoryBrowserPath">@_directoryBrowserPath</p>
                 </div>
 
                 @if (!string.IsNullOrEmpty(_directoryBrowserError))
                 {
-                    <div class="directory-error" role="alert">@_directoryBrowserError</div>
+                    <p class="status error">@_directoryBrowserError</p>
                 }
 
                 <div class="directory-browser">
                     <div class="directory-browser-actions">
-                        <button type="button" class="directory-nav-button" @onclick="NavigateUp" disabled="@(!CanNavigateUp)">⬆ Parent folder</button>
-                        <button type="button" class="directory-nav-button" @onclick="RefreshCurrentDirectory">↻ Refresh</button>
+                        <button type="button" class="ghost-button" @onclick="NavigateUp" disabled="@(!CanNavigateUp)">Вверх</button>
+                        <button type="button" class="ghost-button" @onclick="RefreshCurrentDirectory">Обновить</button>
                     </div>
 
                     <ul class="directory-list" role="listbox">
                         @if (_directoryEntries.Count == 0)
                         {
-                            <li class="directory-empty">No subdirectories</li>
+                            <li class="directory-empty">Внутри нет папок</li>
                         }
                         else
                         {
@@ -145,7 +166,7 @@
                             {
                                 <li>
                                     <button type="button" class="directory-item" @onclick="() => NavigateToDirectory(entry.FullPath)">
-                                        <span aria-hidden="true">📁</span>
+                                        <span class="directory-item-icon" aria-hidden="true"></span>
                                         <span>@entry.Name</span>
                                     </button>
                                 </li>
@@ -155,8 +176,8 @@
                 </div>
 
                 <div class="directory-modal-footer">
-                    <button type="button" class="confirm-button" @onclick="ConfirmDirectorySelection">Use this folder</button>
-                    <button type="button" class="cancel-button" @onclick="CloseDirectoryPicker">Cancel</button>
+                    <button type="button" class="primary-button" @onclick="ConfirmDirectorySelectionAsync">Использовать папку</button>
+                    <button type="button" class="ghost-button" @onclick="CloseDirectoryPicker">Отмена</button>
                 </div>
             </div>
         </div>
@@ -165,6 +186,11 @@
 
 @code {
     private const long MaxFileSize = 10 * 1024 * 1024;
+    private const string PdfNameCookie = "bw_last_pdf_name";
+    private const string ImagesDirCookie = "bw_last_output_dir";
+    private const string HtmlDirCookie = "bw_last_html_dir";
+    private const string PageFromCookie = "bw_last_page_from";
+    private const string PageToCookie = "bw_last_page_to";
 
     private IBrowserFile? _selectedFile;
     private string? _fileName;
@@ -188,52 +214,78 @@
     private string _directoryBrowserPath = string.Empty;
     private List<DirectoryEntry> _directoryEntries = new();
     private string? _directoryBrowserError;
+    private DirectoryTarget _directoryTarget = DirectoryTarget.Images;
 
     private bool IsDecomposeDisabled => _selectedFile is null || string.IsNullOrWhiteSpace(TrimmedOutputDirectory) || _isProcessing;
     private bool CanNavigateUp => TryGetParentDirectory(_directoryBrowserPath) is not null;
     private string TrimmedOutputDirectory => _outputDirectory?.Trim() ?? string.Empty;
+    private string TrimmedTranslationDirectory => _translationOutputDirectory?.Trim() ?? string.Empty;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
+        if (!firstRender)
         {
-            // Restore from cookies
-            _lastPdfName = await JS.InvokeAsync<string?>("cookies.get", "bw_last_pdf_name");
-            var lastDir = await JS.InvokeAsync<string?>("cookies.get", "bw_last_output_dir");
-            if (!string.IsNullOrWhiteSpace(lastDir))
-            {
-                _outputDirectory = lastDir!;
-                RecalculatePagesFromImagesFolder();
-            }
-            var lastHtml = await JS.InvokeAsync<string?>("cookies.get", "bw_last_html_dir");
-            if (!string.IsNullOrWhiteSpace(lastHtml))
-            {
-                _translationOutputDirectory = lastHtml!;
-            }
-            StateHasChanged();
+            return;
         }
+
+        _lastPdfName = await GetCookieAsync(PdfNameCookie);
+        var savedImagesDir = await GetCookieAsync(ImagesDirCookie);
+        if (!string.IsNullOrWhiteSpace(savedImagesDir))
+        {
+            _outputDirectory = savedImagesDir!;
+        }
+
+        var savedHtmlDir = await GetCookieAsync(HtmlDirCookie);
+        if (!string.IsNullOrWhiteSpace(savedHtmlDir))
+        {
+            _translationOutputDirectory = savedHtmlDir!;
+        }
+
+        var savedFrom = await GetCookieAsync(PageFromCookie);
+        if (int.TryParse(savedFrom, NumberStyles.Integer, CultureInfo.InvariantCulture, out var fromValue) && fromValue > 0)
+        {
+            _pageFrom = fromValue;
+        }
+
+        var savedTo = await GetCookieAsync(PageToCookie);
+        if (int.TryParse(savedTo, NumberStyles.Integer, CultureInfo.InvariantCulture, out var toValue) && toValue > 0)
+        {
+            _pageTo = toValue;
+        }
+
+        if (!string.IsNullOrWhiteSpace(TrimmedOutputDirectory))
+        {
+            await RecalculatePagesFromImagesFolderAsync();
+        }
+        else
+        {
+            ValidatePageRange();
+            await PersistPageRangeAsync();
+        }
+
+        StateHasChanged();
     }
 
-    private async void HandleFileSelected(InputFileChangeEventArgs e)
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
     {
         _selectedFile = e.File;
         _fileName = e.File?.Name;
         _statusMessage = null;
+
         if (!string.IsNullOrWhiteSpace(_fileName))
         {
-            await JS.InvokeAsync<bool>("cookies.set", "bw_last_pdf_name", _fileName, 365);
+            await SaveCookieAsync(PdfNameCookie, _fileName);
+            _lastPdfName = _fileName;
         }
     }
 
     private enum DirectoryTarget { Images, Html }
-    private DirectoryTarget _directoryTarget = DirectoryTarget.Images;
 
     private void OpenDirectoryPicker(DirectoryTarget target)
     {
         _directoryTarget = target;
-        var initialPath = string.IsNullOrWhiteSpace(TrimmedOutputDirectory)
-            ? GetDefaultDirectory()
-            : TrimmedOutputDirectory;
+        var current = target == DirectoryTarget.Images ? TrimmedOutputDirectory : TrimmedTranslationDirectory;
+        var initialPath = string.IsNullOrWhiteSpace(current) ? GetDefaultDirectory() : current;
 
         _directoryBrowserError = null;
 
@@ -250,20 +302,20 @@
         _isDirectoryPickerOpen = false;
     }
 
-    private void ConfirmDirectorySelection()
+    private async Task ConfirmDirectorySelectionAsync()
     {
         if (!string.IsNullOrWhiteSpace(_directoryBrowserPath))
         {
             if (_directoryTarget == DirectoryTarget.Images)
             {
                 _outputDirectory = _directoryBrowserPath;
-                JS.InvokeAsync<bool>("cookies.set", "bw_last_output_dir", _outputDirectory, 365);
-                RecalculatePagesFromImagesFolder();
+                await SaveCookieAsync(ImagesDirCookie, _outputDirectory);
+                await RecalculatePagesFromImagesFolderAsync();
             }
             else
             {
                 _translationOutputDirectory = _directoryBrowserPath;
-                JS.InvokeAsync<bool>("cookies.set", "bw_last_html_dir", _translationOutputDirectory, 365);
+                await SaveCookieAsync(HtmlDirCookie, _translationOutputDirectory);
             }
         }
 
@@ -293,14 +345,14 @@
     {
         if (_selectedFile is null)
         {
-            _statusMessage = "Сначала выберите PDF файл.";
+            _statusMessage = "Сначала выберите PDF-файл.";
             _isSuccess = false;
             return;
         }
 
         if (string.IsNullOrWhiteSpace(TrimmedOutputDirectory))
         {
-            _statusMessage = "Выберите папку для сохранения.";
+            _statusMessage = "Нужно выбрать папку для изображений.";
             _isSuccess = false;
             return;
         }
@@ -325,19 +377,20 @@
 
             _isSuccess = true;
             _statusMessage = result.PageCount == 0
-                ? "В PDF документе не найдено страниц."
-                : $"Успешно сохранено страниц: {result.PageCount} в '{outputDirectory}'.";
+                ? "PDF не удалось разобрать."
+                : $"Готово: сохранено {result.PageCount} страниц в '{outputDirectory}'.";
             _progressPercent = 100;
 
             _totalPages = result.PageCount;
             _pageFrom = _totalPages > 0 ? 1 : 0;
             _pageTo = _totalPages;
             ValidatePageRange();
+            await PersistPageRangeAsync();
         }
         catch (Exception ex)
         {
             _isSuccess = false;
-            _statusMessage = $"Не удалось декомпозировать PDF: {ex.Message}";
+            _statusMessage = $"Не удалось разложить PDF: {ex.Message}";
         }
         finally
         {
@@ -346,37 +399,39 @@
         }
     }
 
-    private void OnPageFromChanged(ChangeEventArgs e)
+    private async Task OnPageFromChangedAsync(ChangeEventArgs e)
     {
-        if (int.TryParse(Convert.ToString(e.Value), out var v))
+        if (int.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
         {
-            _pageFrom = v;
+            _pageFrom = value;
             ValidatePageRange();
+            await PersistPageRangeAsync();
         }
     }
 
-    private void OnPageToChanged(ChangeEventArgs e)
+    private async Task OnPageToChangedAsync(ChangeEventArgs e)
     {
-        if (int.TryParse(Convert.ToString(e.Value), out var v))
+        if (int.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
         {
-            _pageTo = v;
+            _pageTo = value;
             ValidatePageRange();
+            await PersistPageRangeAsync();
         }
     }
 
     private void ValidatePageRange()
     {
         _isPageRangeValid = _totalPages > 0 && _pageFrom >= 1 && _pageTo >= 1 && _pageFrom <= _pageTo && _pageTo <= _totalPages;
-        _pageRangeError = _isPageRangeValid ? null : "Неверный диапазон страниц.";
+        _pageRangeError = _isPageRangeValid ? null : "Диапазон страниц вне допустимых значений.";
     }
 
-    private void RecalculatePagesFromImagesFolder()
+    private async Task RecalculatePagesFromImagesFolderAsync()
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(_outputDirectory) && Directory.Exists(_outputDirectory))
+            if (!string.IsNullOrWhiteSpace(TrimmedOutputDirectory) && Directory.Exists(TrimmedOutputDirectory))
             {
-                var files = Directory.GetFiles(_outputDirectory, "page-*.png");
+                var files = Directory.GetFiles(TrimmedOutputDirectory, "page-*.png");
                 _totalPages = files.Length;
                 _pageFrom = _totalPages > 0 ? Math.Clamp(_pageFrom <= 0 ? 1 : _pageFrom, 1, _totalPages) : 0;
                 _pageTo = _totalPages > 0 ? Math.Clamp(_pageTo <= 0 ? _totalPages : _pageTo, 1, _totalPages) : 0;
@@ -394,13 +449,26 @@
             ValidatePageRange();
         }
 
-        InvokeAsync(StateHasChanged);
+        await PersistPageRangeAsync();
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task StartTranslationAsync()
     {
-        if (!_isPageRangeValid || string.IsNullOrWhiteSpace(_translationOutputDirectory))
+        if (!_isPageRangeValid || _totalPages == 0)
         {
+            _translateSuccess = false;
+            _translateStatus = "Сначала подготовьте и выберите страницы.";
+            return;
+        }
+
+        var sourceDir = TrimmedOutputDirectory;
+        var destinationDir = TrimmedTranslationDirectory;
+
+        if (string.IsNullOrWhiteSpace(sourceDir) || string.IsNullOrWhiteSpace(destinationDir))
+        {
+            _translateSuccess = false;
+            _translateStatus = "Нужно выбрать обе папки.";
             return;
         }
 
@@ -417,16 +485,16 @@
 
         try
         {
-            var count = await Translator.TranslateRangeAsync(_outputDirectory, _pageFrom, _pageTo, _translationOutputDirectory, progress);
+            var count = await Translator.TranslateRangeAsync(sourceDir, _pageFrom, _pageTo, destinationDir, progress);
             _translateSuccess = count > 0;
             _translateStatus = count == 0
-                ? "Не найдено изображений для выбранного диапазона."
-                : $"Готово. Создано HTML-страниц: {count}. Папка: '{_translationOutputDirectory}'.";
+                ? "Не найдено страниц для перевода."
+                : $"Готово: создано {count} HTML-файлов в '{destinationDir}'.";
         }
         catch (Exception ex)
         {
             _translateSuccess = false;
-            _translateStatus = $"Ошибка перевода: {ex.Message}";
+            _translateStatus = $"Не удалось выполнить перевод: {ex.Message}";
         }
         finally
         {
@@ -442,7 +510,7 @@
             var fullPath = Path.GetFullPath(directory);
             if (!Directory.Exists(fullPath))
             {
-                _directoryBrowserError = $"Directory '{directory}' was not found.";
+                _directoryBrowserError = $"Папка '{directory}' не найдена.";
                 _directoryEntries = new List<DirectoryEntry>();
                 return false;
             }
@@ -457,7 +525,7 @@
         }
         catch (Exception ex)
         {
-            _directoryBrowserError = $"Unable to open directory: {ex.Message}";
+            _directoryBrowserError = $"Не удалось открыть папку: {ex.Message}";
             _directoryEntries = new List<DirectoryEntry>();
             return false;
         }
@@ -510,6 +578,29 @@
         }
 
         return Environment.CurrentDirectory;
+    }
+
+    private async Task SaveCookieAsync(string key, string value)
+    {
+        await JS.InvokeAsync<bool>("cookies.set", key, value, 365);
+    }
+
+    private async Task<string?> GetCookieAsync(string key)
+    {
+        return await JS.InvokeAsync<string?>("cookies.get", key);
+    }
+
+    private async Task PersistPageRangeAsync()
+    {
+        if (_pageFrom > 0)
+        {
+            await SaveCookieAsync(PageFromCookie, _pageFrom.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (_pageTo > 0)
+        {
+            await SaveCookieAsync(PageToCookie, _pageTo.ToString(CultureInfo.InvariantCulture));
+        }
     }
 
     private sealed record DirectoryEntry(string Name, string FullPath);
