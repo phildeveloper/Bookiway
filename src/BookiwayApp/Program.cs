@@ -8,6 +8,8 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddSingleton<PdfDecomposerService>();
+builder.Services.AddHttpClient(nameof(GeminiTranslationService));
+builder.Services.AddSingleton<GeminiTranslationService>();
 
 var app = builder.Build();
 
