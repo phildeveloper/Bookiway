@@ -1,4 +1,4 @@
-﻿using System.Net.Http;
+using System.Net.Http;
 using System;
 using System.Text;
 using System.Text.Json;
@@ -284,22 +284,45 @@ public sealed class GeminiTranslationService
         var hasError = markdownContent.Contains("| ERROR: No valid translation returned.", StringComparison.Ordinal);
         var safeOriginalName = WebUtility.HtmlEncode(originalFileName);
 
-        string tableContent;
+        string? errorMessage = null;
         if (hasError)
         {
-            tableContent = $$"""
-<div class="error-card">
-    <p class="error-title">Не удалось получить перевод</p>
-    <p>Gemini не вернул корректный результат. Попробуйте ещё раз.</p>
-    <p>Файл: {{safeOriginalName}}</p>
-</div>
-""";
+            var errorLine = markdownContent.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(line => line.Contains("| ОШИБКА:", StringComparison.Ordinal));
+            if (errorLine is not null)
+            {
+                var parsed = errorLine.Split('|', StringSplitOptions.TrimEntries)
+                    .FirstOrDefault(part => part.StartsWith("ОШИБКА:", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(parsed))
+                {
+                    errorMessage = parsed.Replace("ОШИБКА:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+                }
+            }
+
+            errorMessage ??= "Перевод не получен. Проверьте консоль сервиса.";
+        }
+
+        var rowsBuilder = new StringBuilder();
+        if (hasError)
+        {
+            var safeError = WebUtility.HtmlEncode(errorMessage);
+            rowsBuilder.AppendLine($$"""
+<tr>
+    <td colspan="2" class="error-message">
+        ❌ СТРАНИЦА НЕ ПЕРЕВЕДЕНА ❌<br><br>
+        Причина: {{safeError}}<br><br>
+        Обратите внимание на файл: <strong>{{safeOriginalName}}</strong>
+    </td>
+</tr>
+""");
         }
         else
         {
-            var rowsBuilder = new StringBuilder();
             var lines = markdownContent.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Where(line => !line.TrimStart().StartsWith("---", StringComparison.Ordinal))
+                .Where(line =>
+                    !line.Contains("---", StringComparison.Ordinal) &&
+                    !line.Contains("1-я колонка", StringComparison.OrdinalIgnoreCase) &&
+                    !line.Contains("Оригинальный текст", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             foreach (var line in lines)
@@ -321,29 +344,24 @@ public sealed class GeminiTranslationService
 
             if (rowsBuilder.Length == 0)
             {
-                rowsBuilder.AppendLine("<tr><td colspan=\"2\">Содержимое отсутствует.</td></tr>");
+                rowsBuilder.AppendLine("<tr><td colspan=\"2\">Перевод отсутствует.</td></tr>");
             }
-
-            var rowsMarkup = rowsBuilder.ToString();
-            tableContent = $$"""
-<table class="translation-table">
-    <thead>
-        <tr>
-            <th>Оригинал</th>
-            <th>Перевод</th>
-        </tr>
-    </thead>
-    <tbody>
-        {{rowsMarkup}}
-    </tbody>
-</table>
-""";
         }
+
+        var rowsMarkup = rowsBuilder.ToString();
+        var headerRow = hasError
+            ? string.Empty
+            : """
+                <tr>
+                    <th>Оригинальный текст</th>
+                    <th>Перевод</th>
+                </tr>
+                """;
 
         var prevIndex = pageIndex - 1;
         var nextIndex = pageIndex + 1;
-        var prevHref = prevIndex >= 1 ? $"page-{prevIndex:D4}.html" : "#";
-        var nextHref = nextIndex <= totalPages ? $"page-{nextIndex:D4}.html" : "#";
+        var prevLink = prevIndex >= 1 ? $"page-{prevIndex:D4}.html" : "#";
+        var nextLink = nextIndex <= totalPages ? $"page-{nextIndex:D4}.html" : "#";
         var prevDisabled = prevIndex < 1 ? " disabled" : string.Empty;
         var nextDisabled = nextIndex > totalPages ? " disabled" : string.Empty;
 
@@ -352,255 +370,291 @@ public sealed class GeminiTranslationService
             : originalImageRelativePath.Replace("\\", "/");
         var safeImagePathAttribute = WebUtility.HtmlEncode(safeImagePath);
 
-        var originalButton = string.IsNullOrEmpty(safeImagePathAttribute)
-            ? "<button type=\"button\" class=\"pill-button\" disabled>Оригинал недоступен</button>"
-            : $"<button type=\"button\" class=\"pill-button\" data-image=\"{safeImagePathAttribute}\" onclick=\"openOriginal(this)\">Посмотреть оригинал</button>";
+        var originalButtonMarkup = string.IsNullOrEmpty(safeImagePathAttribute)
+            ? "<button type=\"button\" class=\"view-original\" disabled>Оригинал недоступен</button>"
+            : $"<button type=\"button\" class=\"view-original\" data-image=\"{safeImagePathAttribute}\" onclick=\"openOriginal(this)\">Открыть оригинал</button>";
 
         var currentPageFileName = $"page-{pageIndex:D4}.html";
         var outputPath = Path.Combine(htmlOutputFolder, currentPageFileName);
 
-        var html = $$"""
+        var htmlContent = $$"""
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bookiway · Страница {{pageIndex}} из {{totalPages}}</title>
+    <title>Перевод книги - Страница {{pageIndex}} из {{totalPages}}</title>
     <style>
         body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-            transition: background 0.2s ease, color 0.2s ease;
-        }
-        body.light-mode {
-            background: #f8fafc;
-            color: #0f172a;
-        }
-        .page {
-            max-width: 960px;
-            margin: 0 auto;
-            padding: 2.5rem 1.5rem 3rem;
+            background-color: #f7f7f7;
+            color: #333;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
-            gap: 1.5rem;
+        }
+        body.dark-mode {
+            background-color: #1a1a1a;
+            color: #ccc;
+        }
+        .container {
+            background-color: #fff;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        body.dark-mode .container {
+            background-color: #2c2c2c;
+        }
+        .top-navigation,
+        .bottom-navigation {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 5px;
+            background-color: #eee;
+            border-bottom: 1px solid #ddd;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .bottom-navigation {
+            border-top: 1px solid #ddd;
+            border-bottom: none;
+        }
+        body.dark-mode .top-navigation,
+        body.dark-mode .bottom-navigation {
+            background-color: #3a3a3a;
+            border-color: #555;
+        }
+        .page-info {
+            flex: 1 1 240px;
         }
         .page-header {
-            display: flex;
-            justify-content: space-between;
-            gap: 1rem;
-            flex-wrap: wrap;
-            align-items: flex-start;
-        }
-        .brand {
-            text-transform: uppercase;
-            letter-spacing: 0.2em;
-            font-size: 0.8rem;
-            color: #94a3b8;
-            margin: 0 0 0.35rem 0;
-        }
-        .page-header h1 {
+            font-size: 1.4em;
+            font-weight: 600;
             margin: 0;
-            font-size: clamp(1.4rem, 2.5vw, 2rem);
         }
-        .meta {
-            margin: 0.35rem 0 0;
-            color: #94a3b8;
-            font-size: 0.95rem;
+        .source-info {
+            font-size: 0.8em;
+            color: #888;
+            margin: 2px 0 0;
         }
-        .header-actions {
+        body.dark-mode .source-info {
+            color: #aaa;
+        }
+        .navigation-buttons {
             display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
         }
-        .pill-button {
-            border: none;
-            border-radius: 999px;
-            padding: 0.6rem 1.4rem;
-            font-weight: 600;
-            cursor: pointer;
-            background: rgba(226, 232, 240, 0.15);
-            color: inherit;
-        }
-        .pill-button:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-        .navigator {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            border-radius: 20px;
-            padding: 1rem 1.25rem;
-            background: rgba(15, 23, 42, 0.35);
-        }
-        body.light-mode .navigator {
-            background: rgba(15, 23, 42, 0.05);
-        }
-        .navigator.stacked {
-            justify-content: center;
-        }
-        .nav-link {
-            color: inherit;
+        .navigation-buttons a {
             text-decoration: none;
-            font-weight: 600;
+            padding: 6px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            color: inherit;
         }
-        .nav-link.disabled {
-            opacity: 0.4;
+        .navigation-buttons a[disabled] {
+            opacity: 0.5;
             pointer-events: none;
         }
-        .goto {
+        body.dark-mode .navigation-buttons a {
+            border-color: #666;
+        }
+        .go-to-page-controls {
             display: flex;
-            gap: 0.5rem;
             align-items: center;
+            gap: 5px;
         }
-        .goto input {
-            width: 90px;
-            padding: 0.45rem 0.6rem;
-            border-radius: 12px;
-            border: 1px solid rgba(226, 232, 240, 0.4);
-            background: transparent;
-            color: inherit;
+        .go-to-page-controls input {
+            width: 60px;
+            padding: 5px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            text-align: center;
         }
-        .goto button {
-            border: none;
-            border-radius: 12px;
-            padding: 0.45rem 1rem;
-            font-weight: 600;
+        .go-to-page-controls button {
+            padding: 5px 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
             cursor: pointer;
         }
-        body.light-mode .goto input {
-            border-color: rgba(15, 23, 42, 0.2);
+        body.dark-mode .go-to-page-controls input,
+        body.dark-mode .go-to-page-controls button {
+            border-color: #555;
+            background-color: #444;
+            color: #ccc;
         }
-        .translation-section {
-            border-radius: 28px;
-            padding: 1.5rem;
-            background: rgba(15, 23, 42, 0.4);
+        .extra-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
-        body.light-mode .translation-section {
-            background: #fff;
+        #themeToggle,
+        #themeToggleBottom {
+            background: none;
+            border: none;
+            font-size: 1.4em;
+            cursor: pointer;
+            padding: 0 10px;
+            color: #444;
+        }
+        body.dark-mode #themeToggle,
+        body.dark-mode #themeToggleBottom {
+            color: #f0c451;
+        }
+        .view-original {
+            padding: 6px 14px;
+            border-radius: 5px;
+            border: 1px solid #0d6efd;
+            background-color: #0d6efd;
+            color: #fff;
+            cursor: pointer;
+        }
+        .view-original:disabled {
+            background-color: #999;
+            border-color: #888;
+            cursor: not-allowed;
+        }
+        body.dark-mode .view-original {
+            border-color: #4a90e2;
+            background-color: #4a90e2;
         }
         .translation-table {
             width: 100%;
             border-collapse: collapse;
+            flex: 1;
         }
-        .translation-table th,
-        .translation-table td {
-            border: 1px solid rgba(226, 232, 240, 0.2);
-            padding: 0.9rem;
-            vertical-align: top;
+        .translation-table td,
+        .translation-table th {
+            padding: 8px 5px;
+            border: 1px solid #e0e0e0;
             text-align: left;
-        }
-        body.light-mode .translation-table th,
-        body.light-mode .translation-table td {
-            border-color: rgba(15, 23, 42, 0.08);
+            vertical-align: top;
         }
         .translation-table th {
-            text-transform: uppercase;
-            font-size: 0.85rem;
-            letter-spacing: 0.08em;
+            background-color: #f0f8ff;
+            font-weight: bold;
+            color: #1a1a1a;
         }
-        .error-card {
-            border-radius: 20px;
-            padding: 1.5rem;
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.4);
+        body.dark-mode .translation-table td,
+        body.dark-mode .translation-table th {
+            border-color: #555;
         }
-        .error-title {
-            margin-top: 0;
-            font-weight: 700;
+        body.dark-mode .translation-table th {
+            background-color: #4a4a4a;
+            color: #ccc;
         }
-        @media (max-width: 640px) {
-            .page {
-                padding: 1.5rem 1rem 2rem;
-            }
-            .navigator {
+        .error-message {
+            background-color: #ffe0e0;
+            color: #cc0000;
+            font-weight: bold;
+            text-align: center;
+            padding: 20px;
+            font-size: 1.05em;
+            line-height: 1.6;
+        }
+        body.dark-mode .error-message {
+            background-color: #550000;
+            color: #ffcccc;
+        }
+        @media (max-width: 600px) {
+            .top-navigation,
+            .bottom-navigation {
                 flex-direction: column;
                 align-items: stretch;
             }
-            .goto {
+            .navigation-buttons,
+            .go-to-page-controls,
+            .extra-controls {
                 width: 100%;
+                justify-content: space-between;
             }
-            .goto input {
+            .go-to-page-controls input {
                 flex: 1;
             }
-            .header-actions {
-                width: 100%;
-                justify-content: flex-start;
-            }
+        }
+        table {
+            width: 100%;
         }
     </style>
 </head>
-<body onload="initializePage()">
-    <div class="page">
-        <header class="page-header">
-            <div>
-                <p class="brand">Bookiway</p>
-                <h1>Страница {{pageIndex}} из {{totalPages}}</h1>
-                <p class="meta">Оригинальный файл: {{safeOriginalName}}</p>
+<body onload="loadTheme(); saveCurrentPage();">
+    <div class="container">
+        <div class="top-navigation">
+            <div class="page-info">
+                <div class="page-header">Страница {{pageIndex}} из {{totalPages}}</div>
+                <p class="source-info">Источник: {{safeOriginalName}}</p>
             </div>
-            <div class="header-actions">
-                <button type="button" class="pill-button theme-toggle" id="themeToggleTop" onclick="toggleTheme()">&#9728;</button>
-                {{originalButton}}
+            <div class="navigation-buttons">
+                <a href="{{prevLink}}"{{prevDisabled}}>&larr; Назад</a>
+                <a href="{{nextLink}}"{{nextDisabled}}>Вперед &rarr;</a>
             </div>
-        </header>
-        <nav class="navigator">
-            <a href="{{prevHref}}" class="nav-link{{prevDisabled}}" aria-disabled="{{(prevIndex < 1).ToString().ToLowerInvariant()}}">&larr; Назад</a>
-            <div class="goto">
+            <div class="go-to-page-controls">
                 <input type="number" id="pageInputTop" min="1" max="{{totalPages}}" value="{{pageIndex}}">
-                <button type="button" onclick="goToPage(document.getElementById('pageInputTop').value)">Перейти</button>
+                <button onclick="goToPage(document.getElementById('pageInputTop').value)">Перейти</button>
             </div>
-            <a href="{{nextHref}}" class="nav-link{{nextDisabled}}" aria-disabled="{{(nextIndex > totalPages).ToString().ToLowerInvariant()}}">Вперёд &rarr;</a>
-        </nav>
-        <section class="translation-section">
-            {{tableContent}}
-        </section>
-        <nav class="navigator stacked">
-            <a href="{{prevHref}}" class="nav-link{{prevDisabled}}" aria-disabled="{{(prevIndex < 1).ToString().ToLowerInvariant()}}">&larr; Назад</a>
-            <button type="button" class="pill-button theme-toggle" id="themeToggleBottom" onclick="toggleTheme()">&#9728;</button>
-            <div class="goto">
+            <div class="extra-controls">
+                {{originalButtonMarkup}}
+                <button id="themeToggle" onclick="toggleTheme()">🌙</button>
+            </div>
+        </div>
+        <table class="translation-table">
+            <tbody>
+                {{headerRow}}
+                {{rowsMarkup}}
+            </tbody>
+        </table>
+        <div class="bottom-navigation">
+            <div class="navigation-buttons">
+                <a href="{{prevLink}}"{{prevDisabled}}>&larr; Назад</a>
+                <a href="{{nextLink}}"{{nextDisabled}}>Вперед &rarr;</a>
+            </div>
+            <div class="go-to-page-controls">
                 <input type="number" id="pageInputBottom" min="1" max="{{totalPages}}" value="{{pageIndex}}">
-                <button type="button" onclick="goToPage(document.getElementById('pageInputBottom').value)">Перейти</button>
+                <button onclick="goToPage(document.getElementById('pageInputBottom').value)">Перейти</button>
             </div>
-            <a href="{{nextHref}}" class="nav-link{{nextDisabled}}" aria-disabled="{{(nextIndex > totalPages).ToString().ToLowerInvariant()}}">Вперёд &rarr;</a>
-        </nav>
+            <div class="extra-controls">
+                {{originalButtonMarkup}}
+                <button id="themeToggleBottom" onclick="toggleTheme()">🌙</button>
+            </div>
+        </div>
     </div>
     <script>
-        function initializePage() {
-            loadTheme();
-            saveCurrentPage();
-        }
         function loadTheme() {
-            const theme = localStorage.getItem('theme') || 'dark';
-            document.body.className = theme + '-mode';
-            updateThemeLabels(theme);
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            document.body.className = currentTheme + '-mode';
+            updateThemeButtons(currentTheme);
         }
         function toggleTheme() {
-            const current = localStorage.getItem('theme') || 'dark';
-            const next = current === 'dark' ? 'light' : 'dark';
-            localStorage.setItem('theme', next);
-            document.body.className = next + '-mode';
-            updateThemeLabels(next);
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('theme', newTheme);
+            document.body.className = newTheme + '-mode';
+            updateThemeButtons(newTheme);
         }
-        function updateThemeLabels(theme) {
-            const label = theme === 'dark' ? '\u2600' : '\u263E';
-            document.querySelectorAll('.theme-toggle').forEach(btn => btn.textContent = label);
+        function updateThemeButtons(theme) {
+            const label = theme === 'dark' ? '☀️' : '🌙';
+            const top = document.getElementById('themeToggle');
+            const bottom = document.getElementById('themeToggleBottom');
+            if (top) top.textContent = label;
+            if (bottom) bottom.textContent = label;
         }
         function saveCurrentPage() {
             localStorage.setItem('lastReadPage', {{pageIndex}});
         }
-        function goToPage(value) {
-            const total = {{totalPages}};
-            let target = parseInt(value, 10);
-            if (isNaN(target) || target < 1) { target = 1; }
-            if (target > total) { target = total; }
-            localStorage.setItem('lastReadPage', target);
-            const formatted = target.toString().padStart(4, '0');
-            window.location.href = `page-${formatted}.html`;
+        function goToPage(pageNumber) {
+            const totalPages = {{totalPages}};
+            let pageNum = parseInt(pageNumber, 10);
+            if (isNaN(pageNum) || pageNum < 1) {
+                pageNum = 1;
+            } else if (pageNum > totalPages) {
+                pageNum = totalPages;
+            }
+            localStorage.setItem('lastReadPage', pageNum);
+            const formattedPage = pageNum.toString().padStart(4, '0');
+            window.location.href = `page-${formattedPage}.html`;
         }
         function openOriginal(button) {
             const path = button?.getAttribute('data-image');
@@ -612,6 +666,7 @@ public sealed class GeminiTranslationService
 </body>
 </html>
 """;
-        await File.WriteAllTextAsync(outputPath, html, Encoding.UTF8, cancellationToken);
+
+        await File.WriteAllTextAsync(outputPath, htmlContent, Encoding.UTF8, cancellationToken);
     }
 }
