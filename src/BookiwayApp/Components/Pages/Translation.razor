@@ -191,11 +191,14 @@
     private const string HtmlDirCookie = "bw_last_html_dir";
     private const string PageFromCookie = "bw_last_page_from";
     private const string PageToCookie = "bw_last_page_to";
+    private const string PdfCacheCookie = "bw_last_pdf_cache";
+    private static readonly string PdfCacheDirectory = Path.Combine(AppContext.BaseDirectory, "PdfCache");
 
     private IBrowserFile? _selectedFile;
     private string? _fileName;
     private string _outputDirectory = string.Empty;
     private string _translationOutputDirectory = string.Empty;
+    private string? _cachedPdfPath;
     private string? _lastPdfName;
     private int _totalPages;
     private int _pageFrom = 1;
@@ -216,7 +219,8 @@
     private string? _directoryBrowserError;
     private DirectoryTarget _directoryTarget = DirectoryTarget.Images;
 
-    private bool IsDecomposeDisabled => _selectedFile is null || string.IsNullOrWhiteSpace(TrimmedOutputDirectory) || _isProcessing;
+    private bool HasCachedPdf => _selectedFile is not null || (!string.IsNullOrWhiteSpace(_cachedPdfPath) && File.Exists(_cachedPdfPath));
+    private bool IsDecomposeDisabled => !HasCachedPdf || string.IsNullOrWhiteSpace(TrimmedOutputDirectory) || _isProcessing;
     private bool CanNavigateUp => TryGetParentDirectory(_directoryBrowserPath) is not null;
     private string TrimmedOutputDirectory => _outputDirectory?.Trim() ?? string.Empty;
     private string TrimmedTranslationDirectory => _translationOutputDirectory?.Trim() ?? string.Empty;
@@ -227,6 +231,8 @@
         {
             return;
         }
+
+        Directory.CreateDirectory(PdfCacheDirectory);
 
         _lastPdfName = await GetCookieAsync(PdfNameCookie);
         var savedImagesDir = await GetCookieAsync(ImagesDirCookie);
@@ -239,6 +245,16 @@
         if (!string.IsNullOrWhiteSpace(savedHtmlDir))
         {
             _translationOutputDirectory = savedHtmlDir!;
+        }
+
+        var cachedPdfId = await GetCookieAsync(PdfCacheCookie);
+        if (!string.IsNullOrWhiteSpace(cachedPdfId))
+        {
+            var potentialPath = Path.Combine(PdfCacheDirectory, cachedPdfId!);
+            if (File.Exists(potentialPath))
+            {
+                _cachedPdfPath = potentialPath;
+            }
         }
 
         var savedFrom = await GetCookieAsync(PageFromCookie);
@@ -277,9 +293,68 @@
             await SaveCookieAsync(PdfNameCookie, _fileName);
             _lastPdfName = _fileName;
         }
+
+        try
+        {
+            await CacheSelectedFileAsync();
+        }
+        catch (Exception ex)
+        {
+            _cachedPdfPath = null;
+            _statusMessage = $"Не удалось сохранить файл: {ex.Message}";
+        }
     }
 
     private enum DirectoryTarget { Images, Html }
+
+    private async Task CacheSelectedFileAsync()
+    {
+        if (_selectedFile is null)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(PdfCacheDirectory);
+
+        if (!string.IsNullOrWhiteSpace(_cachedPdfPath) && File.Exists(_cachedPdfPath))
+        {
+            TryDeleteFile(_cachedPdfPath);
+        }
+
+        var extension = Path.GetExtension(_selectedFile.Name);
+        var safeExtension = string.IsNullOrWhiteSpace(extension) ? ".pdf" : extension;
+        var cacheFileName = $"{Guid.NewGuid():N}{safeExtension}";
+        var cacheFullPath = Path.Combine(PdfCacheDirectory, cacheFileName);
+
+        await using var targetStream = File.Create(cacheFullPath);
+        await using var sourceStream = _selectedFile.OpenReadStream(MaxFileSize);
+        await sourceStream.CopyToAsync(targetStream);
+
+        _cachedPdfPath = cacheFullPath;
+        await SaveCookieAsync(PdfCacheCookie, cacheFileName);
+
+        // Release the browser file reference; we'll rely on the cached copy.
+        _selectedFile = null;
+    }
+
+    private async Task<Stream?> GetPdfStreamAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_cachedPdfPath) && File.Exists(_cachedPdfPath))
+        {
+            return File.OpenRead(_cachedPdfPath);
+        }
+
+        if (_selectedFile is not null)
+        {
+            await CacheSelectedFileAsync();
+            if (!string.IsNullOrWhiteSpace(_cachedPdfPath) && File.Exists(_cachedPdfPath))
+            {
+                return File.OpenRead(_cachedPdfPath);
+            }
+        }
+
+        return null;
+    }
 
     private void OpenDirectoryPicker(DirectoryTarget target)
     {
@@ -343,7 +418,7 @@
 
     private async Task StartDecompositionAsync()
     {
-        if (_selectedFile is null)
+        if (!HasCachedPdf)
         {
             _statusMessage = "Сначала выберите PDF-файл.";
             _isSuccess = false;
@@ -371,7 +446,14 @@
 
         try
         {
-            await using var stream = _selectedFile.OpenReadStream(MaxFileSize);
+            await using var stream = await GetPdfStreamAsync();
+            if (stream is null)
+            {
+                _statusMessage = "Не удалось получить файл для обработки. Выберите PDF ещё раз.";
+                _isSuccess = false;
+                return;
+            }
+
             var outputDirectory = TrimmedOutputDirectory;
             var result = await PdfDecomposer.DecomposeAsync(stream, outputDirectory, progress);
 
@@ -578,6 +660,18 @@
         }
 
         return Environment.CurrentDirectory;
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Ignored on purpose: cache cleanup is best-effort.
+        }
     }
 
     private async Task SaveCookieAsync(string key, string value)
