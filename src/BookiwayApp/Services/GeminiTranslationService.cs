@@ -1,9 +1,6 @@
-using System.Net.Http;
-using System;
+using System.Net;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Configuration;
-using System.Net;
 
 namespace BookiwayApp.Services;
 
@@ -15,14 +12,27 @@ public sealed class GeminiTranslationService
 
     private const string MODEL_NAME = "gemini-2.5-flash";
     public const string DefaultPrompt = """
-Ты — переводчик художественных и деловых текстов. Выполняй строковый перевод таблицы из двух колонок:
-1. В первой колонке сохраняй оригинальные фразы как есть.
-2. Во второй колонке размещай переведённый текст.
-В требования входит:
-- Сохраняй регистр, выделение и переносы строки, если это влияет на смысл.
-- Не добавляй собственных комментариев.
-- Если текст нельзя прочитать, пометь ячейку как «[неразборчиво]».
-- Используй современной литературный русский язык без сленга.
+Выполни параллельный перевод текста в формате таблицы.
+1-я колонка: Оригинальный текст на английском языке.
+2-я колонка: Перевод на русский язык.
+
+Ключевые требования к переводу:
+
+Естественность и Адаптация: Переводи естественно и литературно на русский язык. 
+Адаптируй синтаксис, грамматику и лексику так, чтобы русский текст звучал понятно, грамотно и естественно для носителя языка. 
+Категорически исключи бессмысленный дословный перевод, сохраняющий английский синтаксис.
+
+Сленг и Идиомы: Переводи сленговые выражения, идиомы и разговорные фразы их наиболее точными, естественными и смысловыми русскими эквивалентами.  
+(Пример: "I gotta go" → "Мне нужно идти")
+
+Сохранение Структуры:
+Не пропускай ни одного предложения, даже короткого.  
+Сохраняй исходный порядок и структуру абзацев.  
+Не объединяй и не разделяй предложения. Каждое предложение оригинала должно соответствовать одной строке перевода.
+
+Формат Ответа:
+Твой ответ должен быть ИСКЛЮЧИТЕЛЬНО таблицей в формате Markdown.  
+Исключи любые вступительные, заключительные или пояснительные тексты.
 """;
 
     public GeminiTranslationService(IHttpClientFactory httpClientFactory, ILogger<GeminiTranslationService> logger, IConfiguration configuration)
@@ -32,7 +42,7 @@ public sealed class GeminiTranslationService
         _apiKey = configuration["Gemini:ApiKey"] ?? string.Empty;
     }
 
-    public async Task<int> TranslateRangeAsync(string imagesDirectory, int startPage, int endPage, string htmlOutputDirectory, string? promptText = null, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<int> TranslateRangeAsync(string imagesDirectory, int startPage, int endPage, string htmlOutputDirectory, IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(imagesDirectory) || !Directory.Exists(imagesDirectory))
         {
@@ -74,7 +84,7 @@ public sealed class GeminiTranslationService
             return 0;
         }
 
-        var effectivePrompt = string.IsNullOrWhiteSpace(promptText) ? DefaultPrompt : promptText!;
+        var effectivePrompt = DefaultPrompt;
 
         for (int i = 0; i < total; i++)
         {
@@ -127,26 +137,31 @@ public sealed class GeminiTranslationService
         if (string.IsNullOrWhiteSpace(_apiKey))
         {
             _logger.LogWarning("Gemini API key is not configured. Set 'Gemini:ApiKey' in appsettings.json.");
-            return "| ERROR: No valid translation returned. | ОШИБКА: API ключ не задан (Gemini:ApiKey). |";
+            return FormatGeminiError("API ключ Gemini не задан (параметр Gemini:ApiKey).");
         }
 
         var url = $"https://generativelanguage.googleapis.com/v1/models/{MODEL_NAME}:generateContent?key={_apiKey}";
 
         var imageBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
         var base64 = Convert.ToBase64String(imageBytes);
+        var mimeType = ResolveMimeType(imagePath);
 
-        const int MaxRetries = 3;
-        const int RetryDelaySeconds = 5;
+        const int MaxAttempts = 6;
+        string? lastError = null;
 
-        for (int attempt = 0; attempt < MaxRetries; attempt++)
+        for (var attempt = 0; attempt < MaxAttempts; attempt++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (attempt > 0)
+            {
+                var delay = CalculateRetryDelay(attempt);
+                _logger.LogInformation("Gemini retry {Attempt}/{Max}. Waiting {Delay} before next call.", attempt + 1, MaxAttempts, delay);
+                await Task.Delay(delay, cancellationToken);
+            }
+
             try
             {
-                if (attempt > 0)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(RetryDelaySeconds), cancellationToken);
-                }
-
                 var client = _httpClientFactory.CreateClient(nameof(GeminiTranslationService));
                 client.Timeout = TimeSpan.FromSeconds(300);
 
@@ -159,7 +174,7 @@ public sealed class GeminiTranslationService
                             parts = new object[]
                             {
                                 new { text = prompt },
-                                new { inlineData = new { mimeType = "image/png", data = base64 } }
+                                new { inlineData = new { mimeType, data = base64 } }
                             }
                         }
                     }
@@ -172,57 +187,160 @@ public sealed class GeminiTranslationService
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var code = (int)response.StatusCode;
-                    if (code == 429 || code >= 500)
+                    var status = (int)response.StatusCode;
+                    var transient = status == 408 || status == 409 || status == 429 || status >= 500;
+                    lastError = $"Gemini РІРµСЂРЅСѓР» HTTP {status}.";
+
+                    if (transient && attempt < MaxAttempts - 1)
                     {
-                        _logger.LogWarning("Temporary Gemini API error {Status}. Will retry.", code);
+                        _logger.LogWarning("Transient Gemini error {Status}. Attempt {Attempt}/{Max}. Body: {Body}", status, attempt + 1, MaxAttempts, responseContent);
                         continue;
                     }
-                    throw new HttpRequestException($"Gemini API error {code}: {responseContent}");
+
+                    throw new HttpRequestException($"Gemini API error {status}: {responseContent}");
                 }
 
                 using var doc = JsonDocument.Parse(responseContent);
 
-                if (doc.RootElement.TryGetProperty("candidates", out var candidates) &&
-                    candidates.ValueKind == JsonValueKind.Array && candidates.GetArrayLength() > 0)
+                if (TryExtractGeminiText(doc, out var text))
                 {
-                    var candidate = candidates[0];
-                    if (candidate.TryGetProperty("content", out var content) &&
-                        content.TryGetProperty("parts", out var parts) &&
-                        parts.ValueKind == JsonValueKind.Array && parts.GetArrayLength() > 0 &&
-                        parts[0].TryGetProperty("text", out var textElement))
-                    {
-                        return textElement.GetString() ?? string.Empty;
-                    }
+                    return text;
                 }
 
-                var feedback = "Неизвестная ошибка API.";
-                if (doc.RootElement.TryGetProperty("promptFeedback", out var promptFeedback))
+                var (feedbackMessage, retryable) = ExtractGeminiFeedback(doc);
+                lastError = feedbackMessage;
+
+                if (retryable && attempt < MaxAttempts - 1)
                 {
-                    if (promptFeedback.TryGetProperty("blockReason", out var blockReason))
-                    {
-                        feedback = $"Блокировка: {blockReason.GetString()}";
-                    }
-                    else if (promptFeedback.TryGetProperty("finishReason", out var finishReason) && finishReason.GetString() != "STOP")
-                    {
-                        feedback = $"Ответ завершен с причиной: {finishReason.GetString()}";
-                    }
+                    _logger.LogWarning("Gemini returned empty content. Attempt {Attempt}/{Max}. Reason: {Reason}", attempt + 1, MaxAttempts, feedbackMessage);
+                    continue;
                 }
 
-                return $"| ERROR: No valid translation returned. | ОШИБКА: Перевод не получен. {feedback} |";
+                return FormatGeminiError(lastError);
             }
-            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
+            catch (JsonException jsonEx)
             {
-                _logger.LogWarning(ex, "Network error while calling Gemini. Attempt {Attempt}/{Max}.", attempt + 1, MaxRetries);
-                if (attempt == MaxRetries - 1)
+                lastError = $"Некорректный JSON от Gemini: {jsonEx.Message}";
+                _logger.LogWarning(jsonEx, "Gemini JSON parse error (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
+            }
+            catch (HttpRequestException httpEx)
+            {
+                lastError = httpEx.Message;
+                _logger.LogWarning(httpEx, "Gemini HTTP error (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
+            }
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastError = "Запрос к Gemini превысил лимит ожидания.";
+                _logger.LogWarning(ex, "Gemini timeout (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
+            }
+        }
+
+        return FormatGeminiError(lastError ?? "Превышено число повторных попыток.");
+    }
+
+    private static string ResolveMimeType(string imagePath)
+    {
+        var extension = Path.GetExtension(imagePath)?.ToLowerInvariant();
+        return extension switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            ".webp" => "image/webp",
+            _ => "image/png"
+        };
+    }
+
+    private static TimeSpan CalculateRetryDelay(int attempt)
+    {
+        var seconds = Math.Min(60, 4 * Math.Pow(1.6, attempt));
+        var jitterMilliseconds = Random.Shared.Next(250, 750);
+        return TimeSpan.FromSeconds(seconds) + TimeSpan.FromMilliseconds(jitterMilliseconds);
+    }
+
+    private static bool TryExtractGeminiText(JsonDocument doc, out string text)
+    {
+        text = string.Empty;
+
+        if (!doc.RootElement.TryGetProperty("candidates", out var candidates) ||
+            candidates.ValueKind != JsonValueKind.Array ||
+            candidates.GetArrayLength() == 0)
+        {
+            return false;
+        }
+
+        foreach (var candidate in candidates.EnumerateArray())
+        {
+            if (!candidate.TryGetProperty("content", out var content) ||
+                !content.TryGetProperty("parts", out var parts) ||
+                parts.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            var builder = new StringBuilder();
+            foreach (var part in parts.EnumerateArray())
+            {
+                if (part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var partText))
                 {
-                    return "| ERROR: No valid translation returned. | ОШИБКА: Превышено число повторных попыток. Таймаут. |";
+                    var chunk = partText.GetString();
+                    if (!string.IsNullOrWhiteSpace(chunk))
+                    {
+                        if (builder.Length > 0)
+                        {
+                            builder.AppendLine();
+                        }
+                        builder.Append(chunk.Trim());
+                    }
+                }
+            }
+
+            if (builder.Length > 0)
+            {
+                text = builder.ToString();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static (string Message, bool Retryable) ExtractGeminiFeedback(JsonDocument doc)
+    {
+        if (doc.RootElement.TryGetProperty("promptFeedback", out var promptFeedback) &&
+            promptFeedback.ValueKind == JsonValueKind.Object)
+        {
+            if (promptFeedback.TryGetProperty("blockReason", out var blockReason))
+            {
+                var reason = blockReason.GetString() ?? "Р·Р°РїСЂРѕСЃ РѕС‚РєР»РѕРЅС‘РЅ";
+                return ($"Р—Р°РїСЂРѕСЃ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ Gemini: {reason}.", false);
+            }
+        }
+
+        if (doc.RootElement.TryGetProperty("candidates", out var candidates) &&
+            candidates.ValueKind == JsonValueKind.Array &&
+            candidates.GetArrayLength() > 0)
+        {
+            var candidate = candidates[0];
+            if (candidate.TryGetProperty("finishReason", out var finishReasonElement))
+            {
+                var finishReason = finishReasonElement.GetString();
+                if (!string.IsNullOrWhiteSpace(finishReason))
+                {
+                    var retryable = !finishReason.Equals("SAFETY", StringComparison.OrdinalIgnoreCase) &&
+                                    !finishReason.Equals("RECITATION", StringComparison.OrdinalIgnoreCase) &&
+                                    !finishReason.Equals("CONTENT_FILTER", StringComparison.OrdinalIgnoreCase);
+
+                    return ($"РњРѕРґРµР»СЊ Р·Р°РІРµСЂС€РёР»Р° РѕС‚РІРµС‚ СЃ РїСЂРёС‡РёРЅРѕР№: {finishReason}.", retryable);
                 }
             }
         }
 
-        return "| ERROR: No valid translation returned. | ОШИБКА: Превышено число повторных попыток. |";
+        return ("Gemini РЅРµ РІРµСЂРЅСѓР» С‚РµРєСЃС‚.", true);
     }
+
+    private static string FormatGeminiError(string reason)
+        => $"| ERROR: No valid translation returned. | РћРЁРР‘РљРђ: {reason} |";
 
     private static async Task CreateIndexHtmlAsync(string htmlOutputFolder, CancellationToken cancellationToken)
     {
@@ -261,7 +379,7 @@ public sealed class GeminiTranslationService
 </head>
 <body>
     <div class=""message"">
-        <p>Подготавливаем последнюю страницу…</p>
+        <p>Пожалуйста, подождите несколько секунд...</p>
     </div>
     <script>
         const storedTheme = localStorage.getItem('theme') || 'dark';
@@ -589,7 +707,7 @@ public sealed class GeminiTranslationService
             </div>
             <div class="navigation-buttons">
                 <a href="{{prevLink}}"{{prevDisabled}}>&larr; Назад</a>
-                <a href="{{nextLink}}"{{nextDisabled}}>Вперед &rarr;</a>
+                <a href="{{nextLink}}"{{nextDisabled}}>Вперёд &rarr;</a>
             </div>
             <div class="go-to-page-controls">
                 <input type="number" id="pageInputTop" min="1" max="{{totalPages}}" value="{{pageIndex}}">
@@ -609,7 +727,7 @@ public sealed class GeminiTranslationService
         <div class="bottom-navigation">
             <div class="navigation-buttons">
                 <a href="{{prevLink}}"{{prevDisabled}}>&larr; Назад</a>
-                <a href="{{nextLink}}"{{nextDisabled}}>Вперед &rarr;</a>
+                <a href="{{nextLink}}"{{nextDisabled}}>Вперёд &rarr;</a>
             </div>
             <div class="go-to-page-controls">
                 <input type="number" id="pageInputBottom" min="1" max="{{totalPages}}" value="{{pageIndex}}">
@@ -670,3 +788,4 @@ public sealed class GeminiTranslationService
         await File.WriteAllTextAsync(outputPath, htmlContent, Encoding.UTF8, cancellationToken);
     }
 }
+
