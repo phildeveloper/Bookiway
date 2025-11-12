@@ -93,7 +93,7 @@ public sealed class GeminiTranslationService
             var imagePath = files[i].Path;
             var pageIndexInSelection = i + 1;
 
-            var translation = await GetGeminiTranslationAsync(imagePath, effectivePrompt, cancellationToken);
+            var translation = await TranslatePageWithGuaranteeAsync(imagePath, effectivePrompt, cancellationToken);
             var relativeImagePath = await CopyImageForStaticHostingAsync(imagePath, htmlOutputDirectory, cancellationToken);
 
             await CreateHtmlPageAsync(
@@ -117,6 +117,53 @@ public sealed class GeminiTranslationService
         return total;
     }
 
+    private async Task<string> TranslatePageWithGuaranteeAsync(string imagePath, string prompt, CancellationToken cancellationToken)
+    {
+        const int MaxPageAttempts = 4;
+        GeminiTranslationResult? lastAttempt = null;
+
+        for (var attempt = 1; attempt <= MaxPageAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lastAttempt = await GetGeminiTranslationAsync(imagePath, prompt, cancellationToken);
+            if (lastAttempt.Success)
+            {
+                return lastAttempt.Content;
+            }
+
+            var reason = lastAttempt.ErrorReason ?? "Gemini не указал причину.";
+            var fileName = Path.GetFileName(imagePath);
+
+            _logger.LogWarning(
+                "Page translation failed ({Attempt}/{Max}) for {File}. Retryable: {Retryable}. Reason: {Reason}",
+                attempt,
+                MaxPageAttempts,
+                fileName,
+                lastAttempt.Retryable,
+                reason);
+
+            if (!lastAttempt.Retryable)
+            {
+                break;
+            }
+
+            var delay = CalculatePageRetryDelay(attempt);
+            _logger.LogInformation("Waiting {Delay} before retrying page {File}.", delay, fileName);
+            await Task.Delay(delay, cancellationToken);
+        }
+
+        var failureReason = lastAttempt?.ErrorReason ?? "Gemini не вернул результат.";
+        throw new InvalidOperationException($"Gemini не смог перевести страницу '{Path.GetFileName(imagePath)}': {failureReason}");
+    }
+
+    private static TimeSpan CalculatePageRetryDelay(int attempt)
+    {
+        var seconds = Math.Min(180, 12 * Math.Pow(1.5, attempt));
+        var jitter = Random.Shared.NextDouble() * 2;
+        return TimeSpan.FromSeconds(seconds + jitter);
+    }
+
     private static async Task<string> CopyImageForStaticHostingAsync(string imagePath, string htmlOutputFolder, CancellationToken cancellationToken)
     {
         var staticFolder = Path.Combine(htmlOutputFolder, "imgs");
@@ -132,12 +179,13 @@ public sealed class GeminiTranslationService
         return Path.Combine("imgs", fileName).Replace('\\', '/');
     }
 
-    private async Task<string> GetGeminiTranslationAsync(string imagePath, string prompt, CancellationToken cancellationToken)
+    private async Task<GeminiTranslationResult> GetGeminiTranslationAsync(string imagePath, string prompt, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_apiKey))
         {
+            const string reason = "API ключ Gemini не задан (параметр Gemini:ApiKey).";
             _logger.LogWarning("Gemini API key is not configured. Set 'Gemini:ApiKey' in appsettings.json.");
-            return FormatGeminiError("API ключ Gemini не задан (параметр Gemini:ApiKey).");
+            return new GeminiTranslationResult(FormatGeminiError(reason), false, false, reason);
         }
 
         var url = $"https://generativelanguage.googleapis.com/v1/models/{MODEL_NAME}:generateContent?key={_apiKey}";
@@ -147,7 +195,7 @@ public sealed class GeminiTranslationService
         var mimeType = ResolveMimeType(imagePath);
 
         const int MaxAttempts = 6;
-        string? lastError = null;
+        GeminiTranslationResult? lastFailure = null;
 
         for (var attempt = 0; attempt < MaxAttempts; attempt++)
         {
@@ -189,7 +237,8 @@ public sealed class GeminiTranslationService
                 {
                     var status = (int)response.StatusCode;
                     var transient = status == 408 || status == 409 || status == 429 || status >= 500;
-                    lastError = $"Gemini РІРµСЂРЅСѓР» HTTP {status}.";
+                    var reason = $"Gemini API error {status}: {responseContent}";
+                    lastFailure = new GeminiTranslationResult(FormatGeminiError(reason), false, transient, reason);
 
                     if (transient && attempt < MaxAttempts - 1)
                     {
@@ -197,7 +246,7 @@ public sealed class GeminiTranslationService
                         continue;
                     }
 
-                    throw new HttpRequestException($"Gemini API error {status}: {responseContent}");
+                    return lastFailure;
                 }
 
                 using var doc = JsonDocument.Parse(responseContent);
@@ -206,21 +255,22 @@ public sealed class GeminiTranslationService
                 {
                     if (IsValidTranslationMarkdown(text, out var validationIssue))
                     {
-                        return text;
+                        return new GeminiTranslationResult(text, true, false, null);
                     }
 
-                    lastError = validationIssue;
+                    lastFailure = new GeminiTranslationResult(FormatGeminiError(validationIssue), false, true, validationIssue);
+
                     if (attempt < MaxAttempts - 1)
                     {
                         _logger.LogWarning("Gemini returned malformed translation. Attempt {Attempt}/{Max}. Reason: {Reason}", attempt + 1, MaxAttempts, validationIssue);
                         continue;
                     }
 
-                    return FormatGeminiError(validationIssue);
+                    return lastFailure;
                 }
 
                 var (feedbackMessage, retryable) = ExtractGeminiFeedback(doc);
-                lastError = feedbackMessage;
+                lastFailure = new GeminiTranslationResult(FormatGeminiError(feedbackMessage), false, retryable, feedbackMessage);
 
                 if (retryable && attempt < MaxAttempts - 1)
                 {
@@ -228,26 +278,30 @@ public sealed class GeminiTranslationService
                     continue;
                 }
 
-                return FormatGeminiError(lastError);
+                return lastFailure;
             }
             catch (JsonException jsonEx)
             {
-                lastError = $"Некорректный JSON от Gemini: {jsonEx.Message}";
+                var reason = $"Некорректный JSON от Gemini: {jsonEx.Message}";
+                lastFailure = new GeminiTranslationResult(FormatGeminiError(reason), false, true, reason);
                 _logger.LogWarning(jsonEx, "Gemini JSON parse error (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
             }
             catch (HttpRequestException httpEx)
             {
-                lastError = httpEx.Message;
+                var reason = httpEx.Message;
+                lastFailure = new GeminiTranslationResult(FormatGeminiError(reason), false, true, reason);
                 _logger.LogWarning(httpEx, "Gemini HTTP error (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
             }
             catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                lastError = "Запрос к Gemini превысил лимит ожидания.";
+                const string reason = "Запрос к Gemini превысил лимит ожидания.";
+                lastFailure = new GeminiTranslationResult(FormatGeminiError(reason), false, true, reason);
                 _logger.LogWarning(ex, "Gemini timeout (attempt {Attempt}/{Max}).", attempt + 1, MaxAttempts);
             }
         }
 
-        return FormatGeminiError(lastError ?? "Превышено число повторных попыток.");
+        const string fallbackReason = "Превышено число повторных попыток.";
+        return lastFailure ?? new GeminiTranslationResult(FormatGeminiError(fallbackReason), false, true, fallbackReason);
     }
 
     private static string ResolveMimeType(string imagePath)
@@ -324,8 +378,8 @@ public sealed class GeminiTranslationService
         {
             if (promptFeedback.TryGetProperty("blockReason", out var blockReason))
             {
-                var reason = blockReason.GetString() ?? "Р·Р°РїСЂРѕСЃ РѕС‚РєР»РѕРЅС‘РЅ";
-                return ($"Р—Р°РїСЂРѕСЃ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ Gemini: {reason}.", false);
+                var reason = blockReason.GetString() ?? "запрос отклонён";
+                return ($"Запрос заблокирован Gemini: {reason}.", false);
             }
         }
 
@@ -343,13 +397,15 @@ public sealed class GeminiTranslationService
                                     !finishReason.Equals("RECITATION", StringComparison.OrdinalIgnoreCase) &&
                                     !finishReason.Equals("CONTENT_FILTER", StringComparison.OrdinalIgnoreCase);
 
-                    return ($"РњРѕРґРµР»СЊ Р·Р°РІРµСЂС€РёР»Р° РѕС‚РІРµС‚ СЃ РїСЂРёС‡РёРЅРѕР№: {finishReason}.", retryable);
+                    return ($"Модель завершила ответ с причиной: {finishReason}.", retryable);
                 }
             }
         }
 
-        return ("Gemini РЅРµ РІРµСЂРЅСѓР» С‚РµРєСЃС‚.", true);
+        return ("Gemini не вернул текст.", true);
     }
+
+    private sealed record GeminiTranslationResult(string Content, bool Success, bool Retryable, string? ErrorReason);
 
     private static string FormatGeminiError(string reason)
         => $"| ERROR: No valid translation returned. | ОШИБКА: {reason} |";
