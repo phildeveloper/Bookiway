@@ -96,6 +96,10 @@
     gap: 0.5rem;
 }
 
+.field-head.note-only {
+    justify-content: flex-end;
+}
+
 .field-label {
     margin: 0;
     font-size: 0.95rem;
