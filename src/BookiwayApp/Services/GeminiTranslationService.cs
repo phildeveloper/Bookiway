@@ -204,7 +204,19 @@ public sealed class GeminiTranslationService
 
                 if (TryExtractGeminiText(doc, out var text))
                 {
-                    return text;
+                    if (IsValidTranslationMarkdown(text, out var validationIssue))
+                    {
+                        return text;
+                    }
+
+                    lastError = validationIssue;
+                    if (attempt < MaxAttempts - 1)
+                    {
+                        _logger.LogWarning("Gemini returned malformed translation. Attempt {Attempt}/{Max}. Reason: {Reason}", attempt + 1, MaxAttempts, validationIssue);
+                        continue;
+                    }
+
+                    return FormatGeminiError(validationIssue);
                 }
 
                 var (feedbackMessage, retryable) = ExtractGeminiFeedback(doc);
@@ -340,7 +352,73 @@ public sealed class GeminiTranslationService
     }
 
     private static string FormatGeminiError(string reason)
-        => $"| ERROR: No valid translation returned. | РћРЁРР‘РљРђ: {reason} |";
+        => $"| ERROR: No valid translation returned. | ОШИБКА: {reason} |";
+
+    private static bool IsValidTranslationMarkdown(string text, out string reason)
+    {
+        reason = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            reason = "Gemini вернул пустой ответ.";
+            return false;
+        }
+
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var tableRows = new List<string[]>();
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.Contains('|', StringComparison.Ordinal) || trimmed.Contains("---", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var cells = trimmed.Split('|', StringSplitOptions.TrimEntries)
+                .Where(cell => !string.IsNullOrWhiteSpace(cell))
+                .ToArray();
+
+            if (cells.Length >= 2)
+            {
+                tableRows.Add(cells);
+            }
+        }
+
+        if (tableRows.Count == 0)
+        {
+            reason = "Gemini не вернул таблицу с переводом.";
+            return false;
+        }
+
+        var dataRows = tableRows
+            .Where(row => !row.Any(ContainsHeaderKeyword))
+            .ToList();
+
+        if (dataRows.Count < 2)
+        {
+            reason = "В ответе Gemini недостаточно строк перевода.";
+            return false;
+        }
+
+        var originalChars = dataRows.Sum(row => row[0].Length);
+        if (originalChars < 80)
+        {
+            reason = "Слишком мало исходного текста в ответе Gemini.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool ContainsHeaderKeyword(string value)
+    {
+        var lowered = value.Trim().ToLowerInvariant();
+        return lowered.Contains("оригинал", StringComparison.Ordinal) ||
+               lowered.Contains("original", StringComparison.Ordinal) ||
+               lowered.Contains("column", StringComparison.Ordinal) ||
+               lowered.Contains("перевод", StringComparison.Ordinal) ||
+               lowered.Contains("translation", StringComparison.Ordinal);
+    }
 
     private static async Task CreateIndexHtmlAsync(string htmlOutputFolder, CancellationToken cancellationToken)
     {
@@ -788,4 +866,3 @@ public sealed class GeminiTranslationService
         await File.WriteAllTextAsync(outputPath, htmlContent, Encoding.UTF8, cancellationToken);
     }
 }
-
