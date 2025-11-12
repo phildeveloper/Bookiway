@@ -1,4 +1,4 @@
-@page "/"
+﻿@page "/"
 @page "/translation"
 @layout EmptyLayout
 @rendermode InteractiveServer
@@ -15,42 +15,44 @@
 <PageTitle>Bookiway</PageTitle>
 
 <div class="translation-shell">
-    <div class="hero">
-        <span class="hero-brand">Bookiway</span>
+    <div class="hero-banner">
+        <span class="hero-wordmark">Bookiway</span>
     </div>
 
-
-    <div class="workflow-grid">
+    <div class="workflow-grid" id="workflow">
         <section class="panel panel-upload">
-            <header class="panel-header">
-                <p class="panel-step">Шаг 1</p>
-                <div>
-                    <h2>Выберите PDF</h2>
-                    <p>Загрузите нужный PDF-файл и выберите папку, куда будут сохранены изображения страниц.</p>
-                </div>
-            </header>
+            <div class="panel-heading">
+                <span class="panel-kicker">Stage 01</span>
+            </div>
 
             <div class="panel-block">
-                <p class="field-label">PDF-файл</p>
+                <div class="field-head">
+                    <p class="field-label">PDF-файл</p>
+                    <span class="field-note">до 10 МБ</span>
+                </div>
                 <label class="file-picker" for="pdfUpload">
                     <span class="file-picker-icon" aria-hidden="true">PDF</span>
-                    <span class="file-picker-text">@(_fileName is null ? "Выберите PDF" : _fileName)</span>
+                    <span class="file-picker-text">Выберите PDF</span>
                     <InputFile id="pdfUpload" OnChange="HandleFileSelected" accept="application/pdf" />
                 </label>
-                <p class="muted-text">До 10 МБ. Можно использовать последнюю выбранную папку из cookies.</p>
-                @if (!string.IsNullOrWhiteSpace(_lastPdfName) && _selectedFile is null)
+                @if (!string.IsNullOrWhiteSpace(_fileName))
                 {
-                    <p class="muted-link" aria-live="polite">Последний файл: @_lastPdfName</p>
+                    <p class="muted-inline" aria-live="polite">Текущий файл: @_fileName</p>
+                }
+                else if (!string.IsNullOrWhiteSpace(_lastPdfName))
+                {
+                    <p class="muted-inline" aria-live="polite">Последний файл: @_lastPdfName</p>
                 }
             </div>
 
             <div class="panel-block">
-                <p class="field-label">Папка для изображений</p>
+                <div class="field-head">
+                    <p class="field-label">Папка для изображений</p>
+                </div>
                 <div class="input-row">
                     <span class="input-chip">@(!string.IsNullOrWhiteSpace(TrimmedOutputDirectory) ? TrimmedOutputDirectory : "Не выбрана")</span>
                     <button type="button" class="ghost-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Images)" disabled="@_isProcessing">Выбрать</button>
                 </div>
-                <p class="muted-text">Изображения будут сохранены в формате page-XXXX.png. Путь запоминается в cookies.</p>
             </div>
 
             <div class="panel-block action-block">
@@ -62,7 +64,6 @@
                         }
                         <span>@(_isProcessing ? "Разбиваю..." : "Разбить PDF")</span>
                     </button>
-                    <span class="hint">После нажатия начнётся обработка файла и создание изображений страниц.</span>
                 </div>
 
                 @if (_isProcessing)
@@ -83,13 +84,9 @@
 
 
         <section class="panel panel-translate">
-            <header class="panel-header">
-                <p class="panel-step">Шаг 2</p>
-                <div>
-                    <h2>Перевод страниц</h2>
-                    <p>Укажите диапазон страниц и папку для HTML. Сервис автоматически создаст переведённые версии страниц.</p>
-                </div>
-            </header>
+            <div class="panel-heading">
+                <span class="panel-kicker">Stage 02</span>
+            </div>
 
             <div class="panel-block">
                 <p class="field-label">Диапазон страниц</p>
@@ -106,12 +103,13 @@
             </div>
 
             <div class="panel-block">
-                <p class="field-label">Папка для HTML</p>
+                <div class="field-head">
+                    <p class="field-label">Папка для HTML</p>
+                </div>
                 <div class="input-row">
                     <span class="input-chip">@(!string.IsNullOrWhiteSpace(TrimmedTranslationDirectory) ? TrimmedTranslationDirectory : "Не выбрана")</span>
                     <button type="button" class="ghost-button" @onclick="() => OpenDirectoryPicker(DirectoryTarget.Html)" disabled="@_isTranslating">Выбрать</button>
                 </div>
-                <p class="muted-text">Укажите папку, куда будут сохранены переведённые HTML-файлы. Путь запоминается автоматически.</p>
             </div>
 
             <div class="panel-block action-block">
@@ -123,7 +121,6 @@
                         }
                         <span>@(_isTranslating ? "Перевожу..." : "Перевести через Gemini")</span>
                     </button>
-                    <span class="hint">Во время перевода используется последняя обработка PDF.</span>
                 </div>
 
                 @if (_isTranslating)
