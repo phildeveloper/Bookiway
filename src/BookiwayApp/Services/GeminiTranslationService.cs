@@ -817,6 +817,10 @@ public sealed class GeminiTranslationService
                 flex-direction: column;
                 align-items: stretch;
             }
+            .page-info {
+                flex: none;
+                width: 100%;
+            }
             .navigation-buttons,
             .go-to-page-controls,
             .extra-controls {
