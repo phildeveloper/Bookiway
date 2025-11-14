@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using Docnet.Core;
 using Docnet.Core.Models;
@@ -54,6 +55,7 @@ public sealed class PdfDecomposerService
             var height = pageReader.GetPageHeight();
 
             using var image = Image.LoadPixelData<Bgra32>(rawBytes, width, height);
+            EnsureOpaqueBackground(image);
 
             var fileName = $"page-{pageIndex + 1:D3}.png";
             var destinationPath = Path.Combine(outputDirectory, fileName);
@@ -68,6 +70,36 @@ public sealed class PdfDecomposerService
         _logger.LogInformation("PDF decomposition completed. Saved {PageCount} pages to {Directory}", pageCount, outputDirectory);
 
         return new PdfDecompositionResult(pageCount, savedFiles);
+    }
+
+    private static void EnsureOpaqueBackground(Image<Bgra32> image)
+    {
+        image.ProcessPixelRows(accessor =>
+        {
+            for (var y = 0; y < accessor.Height; y++)
+            {
+                Span<Bgra32> row = accessor.GetRowSpan(y);
+                for (var x = 0; x < row.Length; x++)
+                {
+                    ref var pixel = ref row[x];
+                    if (pixel.A == byte.MaxValue)
+                    {
+                        continue;
+                    }
+
+                    var alpha = pixel.A / 255f;
+                    pixel.B = BlendChannel(pixel.B, alpha);
+                    pixel.G = BlendChannel(pixel.G, alpha);
+                    pixel.R = BlendChannel(pixel.R, alpha);
+                    pixel.A = byte.MaxValue;
+                }
+            }
+        });
+    }
+
+    private static byte BlendChannel(byte channelValue, float alpha)
+    {
+        return (byte)(channelValue * alpha + 255f * (1f - alpha));
     }
 }
 
