@@ -53,59 +53,67 @@ public sealed class GeminiTranslationService
         Directory.CreateDirectory(htmlOutputDirectory);
         Directory.CreateDirectory(Path.Combine(htmlOutputDirectory, "imgs"));
 
-        var files = new List<(string Path, int Page)>();
+        var allPages = new List<(string Path, int Page)>();
         foreach (var path in Directory.GetFiles(imagesDirectory, "page-*.png"))
         {
             var name = Path.GetFileNameWithoutExtension(path); // page-001
             var parts = name.Split('-');
             if (parts.Length == 2 && int.TryParse(parts[1], out var pageNum))
             {
-                if (pageNum >= startPage && pageNum <= endPage)
-                {
-                    files.Add((path, pageNum));
-                }
+                allPages.Add((path, pageNum));
             }
         }
 
-        files.Sort((a, b) => a.Page.CompareTo(b.Page));
+        if (allPages.Count == 0)
+        {
+            return 0;
+        }
 
-        var total = files.Count;
-        if (total == 0)
+        var files = allPages
+            .Where(entry => entry.Page >= startPage && entry.Page <= endPage)
+            .OrderBy(entry => entry.Page)
+            .ToList();
+
+        var totalDocumentPages = allPages.Max(entry => entry.Page);
+
+        var selectionCount = files.Count;
+        if (selectionCount == 0)
         {
             return 0;
         }
 
         var effectivePrompt = DefaultPrompt;
 
-        for (int i = 0; i < total; i++)
+        for (int i = 0; i < selectionCount; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var imagePath = files[i].Path;
             var pageIndexInSelection = i + 1;
+            var pageNumber = files[i].Page;
 
             var translation = await TranslatePageWithGuaranteeAsync(imagePath, effectivePrompt, cancellationToken);
             var relativeImagePath = await CopyImageForStaticHostingAsync(imagePath, htmlOutputDirectory, cancellationToken);
 
             await CreateHtmlPageAsync(
                 translation,
-                pageIndexInSelection,
-                total,
+                pageNumber,
+                totalDocumentPages,
                 htmlOutputDirectory,
                 Path.GetFileName(imagePath),
                 relativeImagePath,
                 cancellationToken);
 
-            progress?.Report((double)pageIndexInSelection / total);
+            progress?.Report((double)pageIndexInSelection / selectionCount);
 
-            if (pageIndexInSelection < total)
+            if (pageIndexInSelection < selectionCount)
             {
                 await Task.Delay(2000, cancellationToken);
             }
         }
 
         await CreateIndexHtmlAsync(htmlOutputDirectory, cancellationToken);
-        return total;
+        return selectionCount;
     }
 
     private async Task<string> TranslatePageWithGuaranteeAsync(string imagePath, string prompt, CancellationToken cancellationToken)
