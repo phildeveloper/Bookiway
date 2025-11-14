@@ -12,27 +12,18 @@ public sealed class GeminiTranslationService
 
     private const string MODEL_NAME = "gemini-2.5-flash";
     public const string DefaultPrompt = """
-Выполни параллельный перевод текста в формате таблицы.
-1-я колонка: Оригинальный текст на английском языке.
-2-я колонка: Перевод на русский язык.
+Выполни параллельный перевод текста в формате таблицы Markdown.
+В 1-й колонке должен быть Оригинальный текст на английском языке.
+Во 2-й колонке должен быть Перевод на русский язык.
 
-Ключевые требования к переводу:
-
-Естественность и Адаптация: Переводи естественно и литературно на русский язык. 
-Адаптируй синтаксис, грамматику и лексику так, чтобы русский текст звучал понятно, грамотно и естественно для носителя языка. 
-Категорически исключи бессмысленный дословный перевод, сохраняющий английский синтаксис.
-
-Сленг и Идиомы: Переводи сленговые выражения, идиомы и разговорные фразы их наиболее точными, естественными и смысловыми русскими эквивалентами.  
-(Пример: "I gotta go" → "Мне нужно идти")
-
+Ключевые требования:
+...
 Сохранение Структуры:
-Не пропускай ни одного предложения, даже короткого.  
-Сохраняй исходный порядок и структуру абзацев.  
+Не пропускай ни одного предложения, даже короткого.
+Сохраняй исходный порядок и структуру абзавцв.
 Не объединяй и не разделяй предложения. Каждое предложение оригинала должно соответствовать одной строке перевода.
-
-Формат Ответа:
-Твой ответ должен быть ИСКЛЮЧИТЕЛЬНО таблицей в формате Markdown.  
-Исключи любые вступительные, заключительные или пояснительные тексты.
+**КРАЙНЕ ВАЖНО: Никогда не прерывай генерацию посередине предложения или абзаца. Всегда заканчивай перевод. Не останавливай генерацию по причине "MAX_TOKENS" или "LENGTH".**
+**В конце ответа добавь маркер завершения: [END_OF_TRANSLATION].**
 """;
 
     public GeminiTranslationService(IHttpClientFactory httpClientFactory, ILogger<GeminiTranslationService> logger, IConfiguration configuration)
@@ -225,7 +216,12 @@ public sealed class GeminiTranslationService
                                 new { inlineData = new { mimeType, data = base64 } }
                             }
                         }
-                    }
+                    },
+                    generationConfig = new
+                    {
+                        maxOutputTokens = 8192, // Максимально возможное значение для gemini-2.5-flash
+                        temperature = 0.7 // Также помогает против RECITATION, как обсуждали ранее
+                    }
                 };
 
                 var json = JsonSerializer.Serialize(request, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -394,8 +390,11 @@ public sealed class GeminiTranslationService
                 if (!string.IsNullOrWhiteSpace(finishReason))
                 {
                     var retryable = !finishReason.Equals("SAFETY", StringComparison.OrdinalIgnoreCase) &&
-                                    !finishReason.Equals("RECITATION", StringComparison.OrdinalIgnoreCase) &&
-                                    !finishReason.Equals("CONTENT_FILTER", StringComparison.OrdinalIgnoreCase);
+                                      !finishReason.Equals("CONTENT_FILTER", StringComparison.OrdinalIgnoreCase);
+
+                    // RECITATION теперь считается переповторяемой,
+                    // так как повторный запрос может сгенерировать другую последовательность,
+                    // которая не вызовет флаг RECITATION.
 
                     return ($"Модель завершила ответ с причиной: {finishReason}.", retryable);
                 }
@@ -462,6 +461,17 @@ public sealed class GeminiTranslationService
             reason = "Слишком мало исходного текста в ответе Gemini.";
             return false;
         }
+
+        // Новая проверка на маркер завершения
+        if (!text.Contains("[END_OF_TRANSLATION]", StringComparison.Ordinal))
+        {
+            reason = "Gemini вернул обрезанный ответ: отсутствует маркер завершения [END_OF_TRANSLATION].";
+            // Важно: в этом случае вы должны вернуть false, чтобы сработала retry-логика
+            return false;
+        }
+
+        // Удаляем маркер завершения из текста, чтобы он не попал в HTML
+        text = text.Replace("[END_OF_TRANSLATION]", "", StringComparison.Ordinal);
 
         return true;
     }
